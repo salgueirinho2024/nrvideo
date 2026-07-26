@@ -1,0 +1,68 @@
+import {
+  pgTable,
+  text,
+  timestamp,
+  integer,
+  jsonb,
+  boolean,
+} from "drizzle-orm/pg-core";
+import { nanoid } from "nanoid";
+
+// Status possíveis de um projeto de vídeo, na ordem em que acontecem
+export const PROJECT_STATUS = [
+  "pending", // criado, aguardando início do pipeline
+  "generating_script", // Gemini gerando o roteiro
+  "generating_assets", // gerando áudio (TTS) e slides de cada cena
+  "rendering", // FFmpeg montando o vídeo final
+  "done", // vídeo pronto
+  "error", // falhou em alguma etapa
+] as const;
+
+export type ProjectStatus = (typeof PROJECT_STATUS)[number];
+
+export const projects = pgTable("projects", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => nanoid(12)),
+  title: text("title").notNull(),
+  // Texto bruto da NR colado pelo usuário
+  sourceText: text("source_text").notNull(),
+  voice: text("voice").notNull().default("pt-BR-FranciscaNeural"),
+  status: text("status").$type<ProjectStatus>().notNull().default("pending"),
+  errorMessage: text("error_message"),
+  // URL do vídeo final no Vercel Blob, quando pronto
+  videoUrl: text("video_url"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const scenes = pgTable("scenes", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => nanoid(12)),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  order: integer("order").notNull(),
+  // Texto que será narrado (vira áudio)
+  narrationText: text("narration_text").notNull(),
+  // Texto curto exibido na tela (título/bullet do slide)
+  screenText: text("screen_text").notNull(),
+  audioUrl: text("audio_url"),
+  audioDurationSeconds: integer("audio_duration_seconds"),
+  slideImageUrl: text("slide_image_url"),
+  assetsReady: boolean("assets_ready").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Guarda o JSON bruto do roteiro retornado pelo Gemini, útil para depuração/reprocessamento
+export const scriptLogs = pgTable("script_logs", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => nanoid(12)),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  rawResponse: jsonb("raw_response").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
