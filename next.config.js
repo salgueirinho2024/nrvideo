@@ -9,6 +9,12 @@ const nextConfig = {
       "msedge-tts",
     ],
   },
+  outputFileTracingIncludes: {
+    "/api/**/*": [
+      "./node_modules/@ffprobe-installer/**/*",
+      "./node_modules/ffmpeg-static/**/*",
+    ],
+  },
 };
 
 module.exports = nextConfig;
