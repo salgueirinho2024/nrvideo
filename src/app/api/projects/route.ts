@@ -5,6 +5,13 @@ import { desc } from "drizzle-orm";
 import { inngest } from "@/inngest/client";
 import { AVAILABLE_VOICES } from "@/lib/tts";
 
+// Sem isso, o Next.js pode cachear esta rota estaticamente (já que ela não
+// usa cookies/headers), fazendo o front-end ficar preso mostrando o mesmo
+// status antigo (ex: "pending") mesmo depois do projeto já ter concluído
+// no banco. Força a rota a rodar de novo, sem cache, em toda requisição.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET() {
   try {
     const allProjects = await db.query.projects.findMany({

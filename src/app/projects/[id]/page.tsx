@@ -37,6 +37,60 @@ function Spinner() {
   );
 }
 
+function VideoWithRetry({ url }: { url: string }) {
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const MAX_ATTEMPTS = 6;
+
+  function handleError() {
+    if (attempt < MAX_ATTEMPTS - 1) {
+      // Backoff crescente: o Blob às vezes leva alguns segundos pra
+      // propagar a URL recém-criada. Tenta de novo antes de desistir.
+      setTimeout(() => setAttempt((a) => a + 1), 1500 * (attempt + 1));
+    } else {
+      setFailed(true);
+    }
+  }
+
+  if (failed) {
+    return (
+      <div
+        style={{
+          background: "#101a2c",
+          border: "1px solid #1e2c45",
+          borderRadius: 12,
+          padding: 20,
+          marginBottom: 32,
+          color: "#9fb0c9",
+          fontSize: 14,
+        }}
+      >
+        Não consegui carregar o vídeo ainda.{" "}
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          style={{ color: "#7be08a" }}
+        >
+          Tente abrir o link direto
+        </a>{" "}
+        ou recarregue a página em alguns segundos.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "relative", marginBottom: 32 }}>
+      <video
+        key={attempt}
+        src={url}
+        controls
+        onError={handleError}
+        style={{ width: "100%", borderRadius: 12, display: "block" }}
+      />
+    </div>
+  );
+}
 interface Scene {
   id: string;
   order: number;
@@ -215,13 +269,7 @@ export default function ProjectPage() {
             </div>
           )}
 
-          {project.videoUrl && (
-            <video
-              src={project.videoUrl}
-              controls
-              style={{ width: "100%", borderRadius: 12, marginBottom: 32 }}
-            />
-          )}
+          {project.videoUrl && <VideoWithRetry url={project.videoUrl} />}
 
           <h2 style={{ fontSize: 14, letterSpacing: 1.5, color: "#9fb0c9", textTransform: "uppercase" }}>
             Cenas ({scenes.length})
