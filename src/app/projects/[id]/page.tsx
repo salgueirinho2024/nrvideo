@@ -97,6 +97,7 @@ interface Scene {
   narrationText: string;
   screenText: string;
   assetsReady: boolean;
+  imageError: string | null;
 }
 
 interface Project {
@@ -305,6 +306,27 @@ export default function ProjectPage() {
                 </div>
                 <div style={{ fontSize: 14, marginBottom: 4 }}>{s.screenText}</div>
                 <div style={{ fontSize: 13, color: "#9fb0c9" }}>{s.narrationText}</div>
+                {s.imageError && (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 6,
+                      background: "#2c1414",
+                      border: "1px solid #5a1f1f",
+                      color: "#ff8080",
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      fontSize: 12,
+                    }}
+                  >
+                    <span>⚠</span>
+                    <span>
+                      Ilustração não gerada para esta cena: {s.imageError}
+                    </span>
+                  </div>
+                )}
               </div>
             ))}
           </div>

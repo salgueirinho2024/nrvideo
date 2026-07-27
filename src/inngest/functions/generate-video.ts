@@ -113,11 +113,15 @@ export const generateVideoFunction = inngest.createFunction(
 
         // --- Ilustração cartoon gerada por IA a partir do assunto da cena ---
         let sceneImagePath: string | null = null;
+        let imageError: string | null = null;
         try {
           sceneImagePath = await generateSceneImage(scene.imagePrompt ?? "");
         } catch (err) {
           // Não derruba o vídeo inteiro se a geração de imagem falhar numa
           // cena específica: o slide segue sem ilustração para essa cena.
+          // O motivo fica salvo em scenes.imageError (ver abaixo) pra
+          // aparecer na UI em vez de só sumir num log.
+          imageError = err instanceof Error ? err.message : String(err);
           console.error(`Falha ao gerar imagem da cena ${scene.order}:`, err);
         }
 
@@ -145,6 +149,7 @@ export const generateVideoFunction = inngest.createFunction(
             audioUrl,
             audioDurationSeconds: Math.ceil(duration),
             slideImageUrl: slideUrl,
+            imageError,
             assetsReady: true,
           })
           .where(eq(scenes.id, sceneId));

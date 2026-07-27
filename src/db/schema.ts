@@ -51,6 +51,10 @@ export const scenes = pgTable("scenes", {
   // Descrição visual (em inglês) usada para gerar a ilustração cartoon da
   // cena via IA. Ver src/lib/image-gen.ts.
   imagePrompt: text("image_prompt").notNull().default(""),
+  // Guarda o motivo da falha quando a ilustração da cena não pôde ser
+  // gerada (ex: API key ausente, quota, bloqueio de safety). Fica null
+  // quando a imagem foi gerada com sucesso. Ver src/lib/image-gen.ts.
+  imageError: text("image_error"),
   audioUrl: text("audio_url"),
   audioDurationSeconds: integer("audio_duration_seconds"),
   slideImageUrl: text("slide_image_url"),
