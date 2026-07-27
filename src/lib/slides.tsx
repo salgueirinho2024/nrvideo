@@ -4,6 +4,7 @@ import path from "path";
 import os from "os";
 import { promises as fs } from "fs";
 import { nanoid } from "nanoid";
+import { detectImageFormat } from "./image-format";
 
 const WIDTH = 1920;
 const HEIGHT = 1080;
@@ -24,9 +25,9 @@ interface SlideInput {
   totalScenes: number;
   screenText: string;
   projectTitle: string;
-  // Caminho local do PNG cartoon gerado pela IA para esta cena
-  // (ver src/lib/image-gen.ts). Opcional: se faltar/falhar, o slide é
-  // renderizado só com o texto, sem quebrar o vídeo.
+  // Caminho local da imagem cartoon gerada pela IA para esta cena (PNG ou
+  // JPEG, ver src/lib/image-gen.ts e src/lib/image-format.ts). Opcional: se
+  // faltar/falhar, o slide é renderizado só com o texto, sem quebrar o vídeo.
   imagePath?: string | null;
 }
 
@@ -43,7 +44,12 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
   if (input.imagePath) {
     try {
       const buf = await fs.readFile(input.imagePath);
-      imageDataUri = `data:image/png;base64,${buf.toString("base64")}`;
+      // O Pollinations às vezes devolve JPEG mesmo quando a extensão salva é
+      // .png. Rotular o buffer errado na data URI faz o satori/resvg falhar
+      // em decodificar em silêncio — o slide "renderiza" normalmente, só que
+      // sem a ilustração. Detectar pelos magic bytes evita esse descompasso.
+      const { mime } = detectImageFormat(buf);
+      imageDataUri = `data:${mime};base64,${buf.toString("base64")}`;
     } catch {
       imageDataUri = null;
     }

@@ -15,6 +15,7 @@ import path from "path";
 import os from "os";
 import { promises as fs } from "fs";
 import { nanoid } from "nanoid";
+import { detectImageFormat } from "./image-format";
 
 const POLLINATIONS_ENDPOINT = "https://image.pollinations.ai/prompt";
 
@@ -106,7 +107,11 @@ export async function generateSceneImage(imagePrompt: string): Promise<string> {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const buffer = await callPollinationsImageApi(prompt);
-      const outPath = path.join(os.tmpdir(), `scene-img-${nanoid(8)}.png`);
+      // O content-type do Pollinations nem sempre bate com os bytes reais
+      // (ver src/lib/image-format.ts) — detecta pela assinatura binária para
+      // que o arquivo salvo em disco já tenha a extensão certa.
+      const { ext } = detectImageFormat(buffer);
+      const outPath = path.join(os.tmpdir(), `scene-img-${nanoid(8)}.${ext}`);
       await fs.writeFile(outPath, buffer);
       return outPath;
     } catch (err) {
