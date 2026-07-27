@@ -48,9 +48,9 @@ export const scenes = pgTable("scenes", {
   narrationText: text("narration_text").notNull(),
   // Texto curto exibido na tela (título/bullet do slide)
   screenText: text("screen_text").notNull(),
-  // Itens/EPIs relevantes da cena (ex: ["capacete", "luvas"]), usados para
-  // "vestir" o boneco ilustrado no slide. Ver ITEM_KEYS em src/lib/slides.tsx.
-  items: jsonb("items").$type<string[]>().notNull().default([]),
+  // Descrição visual (em inglês) usada para gerar a ilustração cartoon da
+  // cena via IA. Ver src/lib/image-gen.ts.
+  imagePrompt: text("image_prompt").notNull().default(""),
   audioUrl: text("audio_url"),
   audioDurationSeconds: integer("audio_duration_seconds"),
   slideImageUrl: text("slide_image_url"),

@@ -4,6 +4,7 @@ import { projects, scenes, scriptLogs } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { generateScript } from "@/lib/gemini";
 import { synthesizeSpeech } from "@/lib/tts";
+import { generateSceneImage } from "@/lib/image-gen";
 import { generateSlideImage } from "@/lib/slides";
 import { uploadFile } from "@/lib/storage";
 import { downloadToTemp } from "@/lib/download";
@@ -64,7 +65,7 @@ export const generateVideoFunction = inngest.createFunction(
             order: s.order,
             narrationText: s.narrationText,
             screenText: s.screenText,
-            items: s.items,
+            imagePrompt: s.imagePrompt,
           }))
         )
         .returning({ id: scenes.id, order: scenes.order });
@@ -110,13 +111,23 @@ export const generateVideoFunction = inngest.createFunction(
         );
         await fsPromises.unlink(audioPath).catch(() => undefined);
 
-        // --- Slide (imagem) ---
+        // --- Ilustração cartoon gerada por IA a partir do assunto da cena ---
+        let sceneImagePath: string | null = null;
+        try {
+          sceneImagePath = await generateSceneImage(scene.imagePrompt ?? "");
+        } catch (err) {
+          // Não derruba o vídeo inteiro se a geração de imagem falhar numa
+          // cena específica: o slide segue sem ilustração para essa cena.
+          console.error(`Falha ao gerar imagem da cena ${scene.order}:`, err);
+        }
+
+        // --- Slide (imagem final composta) ---
         const slidePath = await generateSlideImage({
           sceneNumber: scene.order,
           totalScenes: script.sceneIds.length,
           screenText: scene.screenText,
           projectTitle: script.title,
-          items: (scene.items as string[]) ?? [],
+          imagePath: sceneImagePath,
         });
         const slideUrl = await uploadFile(
           slidePath,
@@ -124,6 +135,9 @@ export const generateVideoFunction = inngest.createFunction(
           "image/png"
         );
         await fsPromises.unlink(slidePath).catch(() => undefined);
+        if (sceneImagePath) {
+          await fsPromises.unlink(sceneImagePath).catch(() => undefined);
+        }
 
         await db
           .update(scenes)
