@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "^2.1.2",
-    "@huggingface/inference": "^4.13.23",
     "@neondatabase/serverless": "^0.10.4",
     "@resvg/resvg-js": "^2.6.2",
     "@vercel/blob": "^2.6.1",
