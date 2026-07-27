@@ -6,10 +6,23 @@ import { inngest } from "@/inngest/client";
 import { AVAILABLE_VOICES } from "@/lib/tts";
 
 export async function GET() {
-  const allProjects = await db.query.projects.findMany({
-    orderBy: desc(projects.createdAt),
-  });
-  return NextResponse.json({ projects: allProjects });
+  try {
+    const allProjects = await db.query.projects.findMany({
+      orderBy: desc(projects.createdAt),
+    });
+    return NextResponse.json({ projects: allProjects });
+  } catch (err) {
+    console.error("GET /api/projects falhou:", err);
+    return NextResponse.json(
+      {
+        error:
+          err instanceof Error
+            ? err.message
+            : "Erro ao listar projetos.",
+      },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -39,20 +52,36 @@ export async function POST(req: NextRequest) {
       ? body.voice
       : AVAILABLE_VOICES[0].id;
 
-  const [project] = await db
-    .insert(projects)
-    .values({
-      title: "Gerando título...",
-      sourceText,
-      voice,
-      status: "pending",
-    })
-    .returning({ id: projects.id });
+  try {
+    const [project] = await db
+      .insert(projects)
+      .values({
+        title: "Gerando título...",
+        sourceText,
+        voice,
+        status: "pending",
+      })
+      .returning({ id: projects.id });
 
-  await inngest.send({
-    name: "nr-video/generate.requested",
-    data: { projectId: project.id },
-  });
+    await inngest.send({
+      name: "nr-video/generate.requested",
+      data: { projectId: project.id },
+    });
 
-  return NextResponse.json({ projectId: project.id }, { status: 201 });
+    return NextResponse.json({ projectId: project.id }, { status: 201 });
+  } catch (err) {
+    // Loga o erro completo nos logs da Vercel/Inngest para depuração, mas
+    // sempre devolve um JSON válido pro frontend não quebrar com
+    // "Unexpected end of JSON input" ao tentar ler uma resposta vazia.
+    console.error("POST /api/projects falhou:", err);
+    return NextResponse.json(
+      {
+        error:
+          err instanceof Error
+            ? `Falha ao criar o projeto: ${err.message}`
+            : "Falha ao criar o projeto.",
+      },
+      { status: 500 }
+    );
+  }
 }

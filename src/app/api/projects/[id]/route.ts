@@ -7,18 +7,31 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const project = await db.query.projects.findFirst({
-    where: eq(projects.id, params.id),
-  });
+  try {
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, params.id),
+    });
 
-  if (!project) {
-    return NextResponse.json({ error: "Projeto não encontrado." }, { status: 404 });
+    if (!project) {
+      return NextResponse.json({ error: "Projeto não encontrado." }, { status: 404 });
+    }
+
+    const projectScenes = await db.query.scenes.findMany({
+      where: eq(scenes.projectId, params.id),
+      orderBy: asc(scenes.order),
+    });
+
+    return NextResponse.json({ project, scenes: projectScenes });
+  } catch (err) {
+    console.error(`GET /api/projects/${params.id} falhou:`, err);
+    return NextResponse.json(
+      {
+        error:
+          err instanceof Error
+            ? err.message
+            : "Erro ao carregar o projeto.",
+      },
+      { status: 500 }
+    );
   }
-
-  const projectScenes = await db.query.scenes.findMany({
-    where: eq(scenes.projectId, params.id),
-    orderBy: asc(scenes.order),
-  });
-
-  return NextResponse.json({ project, scenes: projectScenes });
 }
