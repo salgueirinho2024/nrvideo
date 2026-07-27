@@ -15,6 +15,33 @@ interface ProjectSummary {
   createdAt: string;
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  pending: "Na fila",
+  generating_script: "Gerando roteiro...",
+  generating_assets: "Gerando áudio e imagens...",
+  rendering: "Renderizando...",
+  done: "Concluído",
+  error: "Erro",
+};
+
+function MiniSpinner() {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        width: 12,
+        height: 12,
+        border: "2px solid rgba(124,224,138,0.25)",
+        borderTopColor: "#7be08a",
+        borderRadius: "50%",
+        animation: "nrvideo-spin 0.8s linear infinite",
+        marginRight: 6,
+        verticalAlign: "middle",
+      }}
+    />
+  );
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [sourceText, setSourceText] = useState("");
@@ -29,11 +56,26 @@ export default function HomePage() {
       .then((r) => r.json())
       .then((d) => setVoices(d.voices || []))
       .catch(() => undefined);
+  }, []);
 
-    fetch("/api/projects")
-      .then((r) => r.json())
-      .then((d) => setProjects(d.projects || []))
-      .catch(() => undefined);
+  useEffect(() => {
+    let stop = false;
+    async function loadProjects() {
+      try {
+        const res = await fetch("/api/projects");
+        const data = await res.json().catch(() => null);
+        if (stop || !data) return;
+        setProjects(data.projects || []);
+      } catch {
+        // silencioso: próxima rodada tenta de novo
+      } finally {
+        if (!stop) setTimeout(loadProjects, 4000);
+      }
+    }
+    loadProjects();
+    return () => {
+      stop = true;
+    };
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -157,6 +199,7 @@ export default function HomePage() {
 
       {projects.length > 0 && (
         <>
+          <style>{`@keyframes nrvideo-spin { to { transform: rotate(360deg); } }`}</style>
           <h2
             style={{
               fontSize: 14,
@@ -176,26 +219,44 @@ export default function HomePage() {
               marginTop: 12,
             }}
           >
-            {projects.map((p) => (
-              <a
-                key={p.id}
-                href={`/projects/${p.id}`}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  background: "#101a2c",
-                  border: "1px solid #1e2c45",
-                  borderRadius: 8,
-                  padding: 14,
-                  color: "#e8edf6",
-                  textDecoration: "none",
-                  fontSize: 14,
-                }}
-              >
-                <span>{p.title}</span>
-                <span style={{ color: "#9fb0c9" }}>{p.status}</span>
-              </a>
-            ))}
+            {projects.map((p) => {
+              const inProgress = p.status !== "done" && p.status !== "error";
+              return (
+                <a
+                  key={p.id}
+                  href={`/projects/${p.id}`}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    background: "#101a2c",
+                    border: "1px solid #1e2c45",
+                    borderRadius: 8,
+                    padding: 14,
+                    color: "#e8edf6",
+                    textDecoration: "none",
+                    fontSize: 14,
+                  }}
+                >
+                  <span>{p.title}</span>
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      color:
+                        p.status === "error"
+                          ? "#ff8080"
+                          : p.status === "done"
+                          ? "#7be08a"
+                          : "#f5b301",
+                    }}
+                  >
+                    {inProgress && <MiniSpinner />}
+                    {STATUS_LABELS[p.status] ?? p.status}
+                  </span>
+                </a>
+              );
+            })}
           </div>
         </>
       )}

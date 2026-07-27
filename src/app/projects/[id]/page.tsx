@@ -7,10 +7,35 @@ import Link from "next/link";
 const STEPS = [
   { key: "pending", label: "Na fila" },
   { key: "generating_script", label: "Roteiro (Gemini)" },
-  { key: "generating_assets", label: "Áudio e slides" },
+  { key: "generating_assets", label: "Áudio e imagens" },
   { key: "rendering", label: "Renderização (FFmpeg)" },
   { key: "done", label: "Concluído" },
 ];
+
+const IN_PROGRESS_LABELS: Record<string, string> = {
+  pending: "Na fila, aguardando início...",
+  generating_script: "Gerando roteiro com IA (Gemini)...",
+  generating_assets: "Gerando áudio e imagens cartoon das cenas...",
+  rendering: "Renderizando o vídeo final (FFmpeg)...",
+};
+
+function Spinner() {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        width: 16,
+        height: 16,
+        border: "2px solid rgba(124,224,138,0.25)",
+        borderTopColor: "#7be08a",
+        borderRadius: "50%",
+        animation: "nrvideo-spin 0.8s linear infinite",
+        marginRight: 10,
+        verticalAlign: "middle",
+      }}
+    />
+  );
+}
 
 interface Scene {
   id: string;
@@ -78,7 +103,10 @@ export default function ProjectPage() {
 
       {!project ? (
         <div style={{ marginTop: 24 }}>
-          <p style={{ color: "#9fb0c9" }}>Carregando...</p>
+          <style>{`@keyframes nrvideo-spin { to { transform: rotate(360deg); } }`}</style>
+          <p style={{ color: "#9fb0c9", display: "flex", alignItems: "center" }}>
+            <Spinner /> Carregando...
+          </p>
           {fetchError && (
             <div
               style={{
@@ -100,7 +128,57 @@ export default function ProjectPage() {
         </div>
       ) : (
         <>
+          <style>{`
+            @keyframes nrvideo-spin { to { transform: rotate(360deg); } }
+            @keyframes nrvideo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+          `}</style>
+
           <h1 style={{ fontSize: 28, margin: "16px 0 24px" }}>{project.title}</h1>
+
+          {project.status !== "done" && project.status !== "error" && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                background: "#152615",
+                border: "1px solid #2e4a2a",
+                borderRadius: 10,
+                padding: "14px 18px",
+                marginBottom: 24,
+                animation: "nrvideo-pulse 2s ease-in-out infinite",
+              }}
+            >
+              <Spinner />
+              <span style={{ color: "#7be08a", fontSize: 15, fontWeight: 500 }}>
+                {IN_PROGRESS_LABELS[project.status] ?? "Gerando..."}
+              </span>
+              {project.status === "generating_assets" && scenes.length > 0 && (
+                <span style={{ color: "#5f9c6b", fontSize: 13, marginLeft: 10 }}>
+                  ({scenes.filter((s) => s.assetsReady).length}/{scenes.length} cenas
+                  prontas)
+                </span>
+              )}
+            </div>
+          )}
+
+          {project.status === "done" && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                background: "#152615",
+                border: "1px solid #2e4a2a",
+                borderRadius: 10,
+                padding: "14px 18px",
+                marginBottom: 24,
+                color: "#7be08a",
+                fontSize: 15,
+                fontWeight: 500,
+              }}
+            >
+              ✓ Vídeo pronto!
+            </div>
+          )}
 
           {project.status === "error" ? (
             <div
@@ -159,8 +237,23 @@ export default function ProjectPage() {
                   padding: 14,
                 }}
               >
-                <div style={{ fontSize: 12, color: "#f5b301", marginBottom: 4 }}>
-                  Cena {s.order} {s.assetsReady ? "✓" : "…"}
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "#f5b301",
+                    marginBottom: 4,
+                    display: "flex",
+                    alignItems: "center",
+                  }}
+                >
+                  Cena {s.order}{" "}
+                  {s.assetsReady ? (
+                    <span style={{ marginLeft: 6 }}>✓</span>
+                  ) : (
+                    <span style={{ marginLeft: 8, display: "inline-flex" }}>
+                      <Spinner />
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 14, marginBottom: 4 }}>{s.screenText}</div>
                 <div style={{ fontSize: 13, color: "#9fb0c9" }}>{s.narrationText}</div>
