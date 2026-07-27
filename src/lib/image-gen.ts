@@ -1,25 +1,33 @@
-// Gera a ilustração de cada cena chamando a Inference API do Hugging Face
-// (modelo FLUX.1-schnell, provider "hf-inference"). Trocado do Gemini Image
-// porque, na conta usada neste projeto, o modelo de imagem do Gemini exige
-// billing habilitado mesmo em uso baixo (quota 0 no free tier) — o Hugging
-// Face tem um free tier real, sem cartão de crédito, para este tipo de uso.
+// Gera a ilustração de cada cena via Hugging Face Inference Providers
+// (modelo FLUX.1-schnell, provider "fal-ai"). Usa a biblioteca oficial
+// @huggingface/inference em vez de montar a URL na mão: a HF migrou o
+// endpoint legado (api-inference.huggingface.co) para um sistema de
+// "provedores" via router.huggingface.co, onde cada provedor tem um
+// formato de requisição ligeiramente diferente — a lib cuida disso
+// automaticamente (é o que a doc oficial recomenda para não quebrar quando
+// o roteamento interno mudar de novo).
+//
+// Trocado do Gemini Image porque, na conta usada neste projeto, o modelo de
+// imagem do Gemini exige billing habilitado mesmo em uso baixo (quota 0 no
+// free tier) — o Hugging Face tem um free tier real, sem cartão de crédito.
 
 import path from "path";
 import os from "os";
 import { promises as fs } from "fs";
 import { nanoid } from "nanoid";
+import { InferenceClient } from "@huggingface/inference";
 
-// Modelo rápido e leve, ótimo para ilustração estilo cartoon/vetorial;
-// disponível no free tier do Hugging Face via provider "hf-inference".
+// Modelo rápido e leve, ótimo para ilustração estilo cartoon/vetorial.
 const IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell";
-const HF_ENDPOINT = `https://api-inference.huggingface.co/models/${IMAGE_MODEL}`;
+// Provedor que serve esse modelo com boa disponibilidade no free tier da HF.
+const PROVIDER = "fal-ai";
 
 const STYLE_SUFFIX =
   "flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters or words in the image, square composition";
 
 const MAX_ATTEMPTS = 3;
 // Backoff simples entre tentativas (ms). Cobre principalmente erros
-// transitórios (429/5xx) e o modelo "esquentando" (503 model loading).
+// transitórios (429/5xx) e o modelo "esquentando" no provedor.
 const RETRY_DELAY_MS = 3000;
 
 function sleep(ms: number) {
@@ -27,60 +35,49 @@ function sleep(ms: number) {
 }
 
 /**
- * Faz UMA chamada à Inference API do Hugging Face. Lança erro com mensagem
- * específica e acionável em cada caso de falha conhecido, para que o motivo
- * real fique visível (no log e, a partir de generate-video.ts, no banco/UI)
- * em vez de a cena simplesmente sair sem ilustração.
+ * Faz UMA chamada de geração de imagem via Hugging Face. Lança erro com
+ * mensagem específica e acionável em cada caso de falha conhecido, para que
+ * o motivo real fique visível (no log e, a partir de generate-video.ts, no
+ * banco/UI) em vez de a cena simplesmente sair sem ilustração.
  */
 async function callHuggingFaceImageApi(prompt: string, apiKey: string): Promise<Buffer> {
-  const response = await fetch(HF_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      inputs: prompt,
-      parameters: {
-        width: 1024,
-        height: 1024,
+  const client = new InferenceClient(apiKey);
+
+  let blob: Blob;
+  try {
+    blob = await client.textToImage(
+      {
+        model: IMAGE_MODEL,
+        provider: PROVIDER,
+        inputs: prompt,
       },
-    }),
-  });
-
-  const contentType = response.headers.get("content-type") ?? "";
-
-  if (!response.ok) {
-    const errText = await response.text();
-    // 401/403: token inválido ou sem permissão de "Inference Providers".
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(
-        `Hugging Face recusou o token (${response.status}). Verifique se HUGGINGFACE_API_KEY é válido e tem permissão "Make calls to Inference Providers". Detalhe: ${errText}`
-      );
-    }
-    // 429: limite do free tier atingido (cota mensal de créditos).
-    if (response.status === 429) {
-      throw new Error(
-        `Hugging Face: limite de quota/rate atingido (429). Detalhe: ${errText}`
-      );
-    }
-    // 503: modelo "frio", ainda carregando no provider — normal na primeira
-    // chamada depois de um tempo sem uso; vale tentar de novo.
-    if (response.status === 503) {
-      throw new Error(`Hugging Face: modelo ainda carregando (503). Detalhe: ${errText}`);
-    }
-    throw new Error(`Hugging Face Image API falhou (${response.status}): ${errText}`);
-  }
-
-  // Quando dá certo, a resposta é a imagem crua (bytes), não JSON.
-  if (!contentType.startsWith("image/")) {
-    const text = await response.text().catch(() => "");
-    throw new Error(
-      `Hugging Face não retornou uma imagem utilizável para a cena (content-type inesperado: ${contentType}). Detalhe: ${text.slice(0, 300)}`
+      { outputType: "blob" }
     );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status =
+      err && typeof err === "object" && "httpResponse" in err
+        ? (err as { httpResponse?: { status?: number } }).httpResponse?.status
+        : undefined;
+
+    if (status === 401 || status === 403 || /unauthorized|forbidden/i.test(message)) {
+      throw new Error(
+        `Hugging Face recusou o token (${status ?? "auth"}). Verifique se HUGGINGFACE_API_KEY é válido e tem permissão "Make calls to Inference Providers". Detalhe: ${message}`
+      );
+    }
+    if (status === 429 || /rate.?limit|quota/i.test(message)) {
+      throw new Error(`Hugging Face: limite de quota/rate atingido. Detalhe: ${message}`);
+    }
+    if (status === 503 || /loading|warm(ing)? ?up/i.test(message)) {
+      throw new Error(`Hugging Face: modelo ainda carregando no provedor. Detalhe: ${message}`);
+    }
+    throw new Error(`Hugging Face Image API falhou (${status ?? "sem status"}): ${message}`);
   }
 
-  const arrayBuffer = await response.arrayBuffer();
+  const arrayBuffer = await blob.arrayBuffer();
+  if (arrayBuffer.byteLength === 0) {
+    throw new Error("Hugging Face retornou uma imagem vazia para a cena.");
+  }
   return Buffer.from(arrayBuffer);
 }
 
