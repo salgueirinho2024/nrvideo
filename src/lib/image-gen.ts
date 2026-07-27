@@ -41,8 +41,11 @@ export async function generateSceneImage(imagePrompt: string): Promise<string> {
         },
       ],
       generationConfig: {
-        // O modelo aceita texto e imagem nas respostas; pedimos só imagem.
-        responseModalities: ["IMAGE"],
+        // Importante: o modelo NÃO aceita gerar só imagem — a resposta
+        // precisa incluir TEXT junto com IMAGE, senão a API retorna erro
+        // (o que antes fazia a geração de imagem falhar silenciosamente
+        // em toda cena, e o slide saía sem ilustração nenhuma).
+        responseModalities: ["TEXT", "IMAGE"],
       },
     }),
   });
