@@ -16,17 +16,19 @@ export async function synthesizeSpeech(
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
-  const outPath = path.join(os.tmpdir(), `tts-${nanoid(8)}.mp3`);
-  await tts.toFile(outPath, text);
+  // A partir do msedge-tts v2, toFile() recebe um DIRETÓRIO (não mais um
+  // caminho de arquivo) e escolhe o nome do arquivo internamente.
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), `tts-${nanoid(6)}-`));
+  const { audioFilePath } = await tts.toFile(outDir, text);
   tts.close();
 
   // Garante que o arquivo realmente foi escrito com conteúdo
-  const stat = await fs.stat(outPath);
+  const stat = await fs.stat(audioFilePath);
   if (stat.size === 0) {
     throw new Error("TTS gerou um arquivo de áudio vazio.");
   }
 
-  return outPath;
+  return audioFilePath;
 }
 
 export const AVAILABLE_VOICES = [

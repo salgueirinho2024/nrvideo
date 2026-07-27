@@ -4,6 +4,7 @@ const nextConfig = {
     serverComponentsExternalPackages: [
       "fluent-ffmpeg",
       "ffmpeg-static",
+      "@ffprobe-installer/ffprobe",
       "@resvg/resvg-js",
       "msedge-tts",
     ],

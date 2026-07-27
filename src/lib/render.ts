@@ -1,5 +1,6 @@
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
+import { path as ffprobePath } from "@ffprobe-installer/ffprobe";
 import path from "path";
 import os from "os";
 import { promises as fs } from "fs";
@@ -7,6 +8,9 @@ import { nanoid } from "nanoid";
 
 if (ffmpegPath) {
   ffmpeg.setFfmpegPath(ffmpegPath as unknown as string);
+}
+if (ffprobePath) {
+  ffmpeg.setFfprobePath(ffprobePath);
 }
 
 export interface RenderScene {

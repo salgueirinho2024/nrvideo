@@ -13,7 +13,7 @@ export interface GeneratedScript {
   raw: unknown;
 }
 
-const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_MODEL = "gemini-flash-latest";
 
 const SYSTEM_PROMPT = `Você é um roteirista especialista em treinamentos de segurança do trabalho (Normas Regulamentadoras - NRs) no Brasil.
 
