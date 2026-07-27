@@ -32,17 +32,33 @@ export default function ProjectPage() {
   const params = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [scenes, setScenes] = useState<Scene[]>([]);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     let stop = false;
     async function poll() {
-      const res = await fetch(`/api/projects/${params.id}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      if (stop) return;
-      setProject(data.project);
-      setScenes(data.scenes || []);
-      if (data.project.status !== "done" && data.project.status !== "error") {
+      try {
+        const res = await fetch(`/api/projects/${params.id}`);
+        const data = await res.json().catch(() => null);
+        if (stop) return;
+        if (!res.ok) {
+          setFetchError(
+            (data && data.error) || `Erro ${res.status} ao carregar o projeto.`
+          );
+          setTimeout(poll, 4000);
+          return;
+        }
+        setFetchError(null);
+        setProject(data.project);
+        setScenes(data.scenes || []);
+        if (data.project.status !== "done" && data.project.status !== "error") {
+          setTimeout(poll, 4000);
+        }
+      } catch (err) {
+        if (stop) return;
+        setFetchError(
+          err instanceof Error ? err.message : "Erro de rede ao carregar o projeto."
+        );
         setTimeout(poll, 4000);
       }
     }
@@ -61,7 +77,27 @@ export default function ProjectPage() {
       </Link>
 
       {!project ? (
-        <p style={{ color: "#9fb0c9", marginTop: 24 }}>Carregando...</p>
+        <div style={{ marginTop: 24 }}>
+          <p style={{ color: "#9fb0c9" }}>Carregando...</p>
+          {fetchError && (
+            <div
+              style={{
+                background: "#2c1414",
+                border: "1px solid #5a1f1f",
+                color: "#ff8080",
+                padding: 16,
+                borderRadius: 8,
+                marginTop: 12,
+                fontSize: 13,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              Erro ao carregar: {fetchError}
+              <br />
+              Tentando novamente a cada 4s...
+            </div>
+          )}
+        </div>
       ) : (
         <>
           <h1 style={{ fontSize: 28, margin: "16px 0 24px" }}>{project.title}</h1>
