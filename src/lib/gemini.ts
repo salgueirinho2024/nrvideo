@@ -1,10 +1,28 @@
 // Chama a API do Gemini diretamente via REST (evita depender de uma versão
 // específica do SDK oficial, que muda com frequência).
 
+// Vocabulário controlado de itens que o boneco ilustrado sabe desenhar
+// (ver ITEM_KEYS / ITEM_RENDERERS em src/lib/slides.tsx). O Gemini só pode
+// escolher itens desta lista — qualquer valor fora dela é ignorado no
+// parsing para não quebrar a ilustração.
+export const KNOWN_ITEMS = [
+  "capacete",
+  "oculos",
+  "luvas",
+  "colete",
+  "botina",
+  "mascara",
+  "protetor_auricular",
+  "cinto_seguranca",
+  "extintor",
+  "placa_alerta",
+] as const;
+
 export interface GeneratedScene {
   order: number;
   narrationText: string;
   screenText: string;
+  items: string[];
 }
 
 export interface GeneratedScript {
@@ -24,12 +42,13 @@ Regras:
 - Use linguagem clara, direta e didática, como se estivesse explicando para um trabalhador que vai assistir ao vídeo, não para um jurista.
 - "screenText" é um texto curto (título ou 1 frase) que aparece escrito na tela durante a cena — deve resumir a ideia central da cena, não repetir a narração palavra por palavra.
 - Gere entre 6 e 14 cenas, cobrindo: introdução ao tema, os pontos principais da norma, riscos envolvidos, medidas de prevenção/EPIs quando aplicável, e uma cena de encerramento/reforço.
+- "items": lista de 0 a 3 itens desta lista fixa que a cena ilustra visualmente através de um boneco de segurança: ${KNOWN_ITEMS.join(", ")}. Use apenas quando fizer sentido para o conteúdo da cena (ex: uma cena sobre proteção auditiva usa ["protetor_auricular"]; uma cena introdutória sem EPI específico pode usar []). Nunca invente itens fora desta lista.
 - Responda APENAS com um JSON válido, sem markdown, sem comentários, no formato exato:
 
 {
   "title": "Título curto do treinamento",
   "scenes": [
-    { "order": 1, "narrationText": "...", "screenText": "..." }
+    { "order": 1, "narrationText": "...", "screenText": "...", "items": ["capacete"] }
   ]
 }`;
 
@@ -92,6 +111,11 @@ export async function generateScript(sourceText: string): Promise<GeneratedScrip
       order: s.order ?? i + 1,
       narrationText: s.narrationText,
       screenText: s.screenText,
+      items: Array.isArray(s.items)
+        ? s.items.filter((item): item is string =>
+            (KNOWN_ITEMS as readonly string[]).includes(item)
+          )
+        : [],
     })),
     raw: data,
   };

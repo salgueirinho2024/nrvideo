@@ -47,7 +47,10 @@ function renderSceneClip(scene: RenderScene, index: number): Promise<string> {
         "-b:a 192k",
         "-pix_fmt yuv420p",
         "-shortest",
-        "-vf scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+        // Normaliza para 1920x1080, faz upscale (headroom de nitidez) e aplica
+        // um zoom lento e contínuo (Ken Burns) até 1.15x, centralizado. Dá uma
+        // sensação de movimento ao slide em vez de imagem totalmente parada.
+        "-vf scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,scale=2880:1620,zoompan=z='min(zoom+0.0008,1.15)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30",
       ])
       .output(outPath)
       .on("end", () => resolve(outPath))

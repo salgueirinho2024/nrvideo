@@ -64,6 +64,7 @@ export const generateVideoFunction = inngest.createFunction(
             order: s.order,
             narrationText: s.narrationText,
             screenText: s.screenText,
+            items: s.items,
           }))
         )
         .returning({ id: scenes.id, order: scenes.order });
@@ -115,6 +116,7 @@ export const generateVideoFunction = inngest.createFunction(
           totalScenes: script.sceneIds.length,
           screenText: scene.screenText,
           projectTitle: script.title,
+          items: (scene.items as string[]) ?? [],
         });
         const slideUrl = await uploadFile(
           slidePath,
