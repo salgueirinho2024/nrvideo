@@ -8,12 +8,12 @@ const nextConfig = {
       "@resvg/resvg-js",
       "msedge-tts",
     ],
-  },
-  outputFileTracingIncludes: {
-    "/api/**/*": [
-      "./node_modules/@ffprobe-installer/**/*",
-      "./node_modules/ffmpeg-static/**/*",
-    ],
+    outputFileTracingIncludes: {
+      "/api/**/*": [
+        "./node_modules/@ffprobe-installer/**/*",
+        "./node_modules/ffmpeg-static/**/*",
+      ],
+    },
   },
 };
 
