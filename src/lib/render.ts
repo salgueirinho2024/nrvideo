@@ -16,12 +16,21 @@ if (ffprobePath) {
 
 // --- Mascote (bolha "falando" no canto, ver src/lib/mascot.tsx) ---
 // Tamanho final da bolha sobreposta ao vídeo (px) e distância das bordas.
-const MASCOT_DISPLAY_SIZE = 220;
-const MASCOT_MARGIN = 40;
-// Ritmo de troca entre os frames boca-fechada/boca-aberta (segundos). Não é
-// lip-sync real, só um ciclo constante que dá a sensação de "falando"
-// enquanto a cena tem narração.
-const MASCOT_MOUTH_TOGGLE_SECONDS = 0.18;
+// Canto superior direito, bem maior que a versão anterior (bolha pequena no
+// canto inferior) para ter presença de verdade na tela.
+const MASCOT_DISPLAY_SIZE = 340;
+const MASCOT_MARGIN = 36;
+
+// --- Detecção de fala/silêncio (sincronia da boca com o áudio real) ---
+// Em vez de alternar os frames boca-aberta/boca-fechada num ritmo artificial
+// e constante, detectamos de verdade os trechos com voz e os trechos de
+// silêncio no áudio da narração (via o filtro `silencedetect` do próprio
+// FFmpeg — sem nenhuma API externa). A boca só "mexe" (alterna entre os
+// frames num ritmo curto) durante os trechos com voz; nos trechos de
+// silêncio, fica sempre no frame de boca fechada.
+const SILENCE_NOISE_THRESHOLD_DB = -30; // abaixo disso é considerado silêncio
+const SILENCE_MIN_DURATION = 0.15; // pausas menores que isso são ignoradas (evita "piscar" a boca em micro-pausas)
+const MOUTH_FLAP_SECONDS = 0.16; // ritmo de abre/fecha da boca ENQUANTO está falando
 
 export interface RenderScene {
   imagePath: string;
@@ -40,6 +49,59 @@ export function getAudioDuration(audioPath: string): Promise<number> {
   });
 }
 
+interface SilenceInterval {
+  start: number;
+  end: number;
+}
+
+/**
+ * Roda o áudio da cena pelo filtro `silencedetect` do FFmpeg (sem gerar
+ * nenhum arquivo de saída — só analisa) e extrai os trechos de silêncio do
+ * log (stderr). Se a análise falhar por qualquer motivo, retorna lista
+ * vazia (mais seguro do que travar o pipeline inteiro: nesse caso a boca
+ * simplesmente fica sempre fechada nessa cena, em vez de quebrar o vídeo).
+ */
+function detectSilenceIntervals(audioPath: string, duration: number): Promise<SilenceInterval[]> {
+  return new Promise((resolve) => {
+    let log = "";
+    ffmpeg(audioPath)
+      .audioFilters(`silencedetect=noise=${SILENCE_NOISE_THRESHOLD_DB}dB:d=${SILENCE_MIN_DURATION}`)
+      .outputOptions(["-f null"])
+      .output(process.platform === "win32" ? "NUL" : "/dev/null")
+      .on("stderr", (line: string) => {
+        log += line + "\n";
+      })
+      .on("end", () => resolve(parseSilenceLog(log, duration)))
+      .on("error", () => resolve([]))
+      .run();
+  });
+}
+
+function parseSilenceLog(log: string, duration: number): SilenceInterval[] {
+  const starts = [...log.matchAll(/silence_start:\s*([\d.]+)/g)].map((m) => parseFloat(m[1]));
+  const ends = [...log.matchAll(/silence_end:\s*([\d.]+)/g)].map((m) => parseFloat(m[1]));
+  return starts.map((start, i) => ({
+    start,
+    // Se o áudio termina durante um silêncio, o FFmpeg não chega a logar o
+    // "silence_end" correspondente — nesse caso, o silêncio vai até o fim.
+    end: ends[i] !== undefined ? ends[i] : duration,
+  }));
+}
+
+/**
+ * Monta a expressão de filtro do FFmpeg que representa "não está em
+ * silêncio neste instante t": para cada intervalo de silêncio, multiplica
+ * por (1 - between(t, início, fim)) — o produto só é 1 quando t não cai em
+ * NENHUM dos intervalos. Retorna "1" (sempre falando) se não houver
+ * silêncio detectado.
+ */
+function buildIsSpeakingExpr(silences: SilenceInterval[]): string {
+  if (silences.length === 0) return "1";
+  return silences
+    .map((s) => `(1-between(t\\,${s.start.toFixed(3)}\\,${s.end.toFixed(3)}))`)
+    .join("*");
+}
+
 /**
  * Gera um clipe de vídeo (mp4) para UMA cena: imagem estática + áudio da narração.
  * Exportada (além de usada por renderFinalVideo) para permitir que cada
@@ -52,14 +114,19 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   const outPath = path.join(os.tmpdir(), `scene-${index}-${nanoid(6)}.mp4`);
   const { closedPath, openPath } = await getMascotFrames();
 
-  // Expressão booleana (reutilizada nos dois overlays) que alterna entre
-  // boca-fechada e boca-aberta a cada MASCOT_MOUTH_TOGGLE_SECONDS. A vírgula
-  // dentro de mod(...) precisa ser escapada com "\," porque, dentro de uma
-  // definição de filtro do FFmpeg, vírgula normalmente separa filtros — sem o
-  // escape o parser quebraria a expressão em dois filtros inválidos.
-  const toggle = `mod(floor(t/${MASCOT_MOUTH_TOGGLE_SECONDS})\\,2)`;
+  const duration = await getAudioDuration(scene.audioPath);
+  const silences = await detectSilenceIntervals(scene.audioPath, duration);
+  const isSpeaking = buildIsSpeakingExpr(silences);
+
+  // Ritmo de abre/fecha ENQUANTO está falando (0/1 alternando a cada
+  // MOUTH_FLAP_SECONDS). Fora dos trechos de fala, isSpeaking = 0 anula essa
+  // parte e o resultado fica sempre "fechado".
+  const flapToggle = `mod(floor(t/${MOUTH_FLAP_SECONDS})\\,2)`;
+  const openEnable = `(${isSpeaking})*eq(${flapToggle}\\,1)`;
+  const closedEnable = `1-(${openEnable})`;
+
   const mascotX = `W-w-${MASCOT_MARGIN}`;
-  const mascotY = `H-h-${MASCOT_MARGIN}`;
+  const mascotY = `${MASCOT_MARGIN}`; // canto SUPERIOR direito
 
   const filterComplex =
     // Fundo: normaliza para 1920x1080, faz upscale (headroom de nitidez) e
@@ -69,10 +136,10 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     // Redimensiona os dois frames do mascote pro tamanho final da bolha.
     `[2:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[closed];` +
     `[3:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[open];` +
-    // Sobrepõe um frame ou outro no canto inferior direito, alternando no
-    // tempo — só um dos dois fica visível (`enable`) a cada instante.
-    `[bg][closed]overlay=x=${mascotX}:y=${mascotY}:enable='eq(${toggle}\\,0)'[tmp];` +
-    `[tmp][open]overlay=x=${mascotX}:y=${mascotY}:enable='eq(${toggle}\\,1)'[vout]`;
+    // Sobrepõe boca fechada ou boca aberta no canto superior direito —
+    // "aberta" só fica habilitada durante trechos com voz detectada.
+    `[bg][closed]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${closedEnable}\\,0)'[tmp];` +
+    `[tmp][open]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${openEnable}\\,0)'[vout]`;
 
   return new Promise((resolve, reject) => {
     ffmpeg()
