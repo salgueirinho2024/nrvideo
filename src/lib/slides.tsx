@@ -24,6 +24,10 @@ interface SlideInput {
   sceneNumber: number;
   totalScenes: number;
   screenText: string;
+  // Texto integral narrado nesta cena (o que o TTS efetivamente fala).
+  // Exibido como legenda na parte inferior do slide. Opcional para não
+  // quebrar chamadas existentes, mas o pipeline sempre deve enviar.
+  narrationText?: string | null;
   projectTitle: string;
   // Caminho local da imagem cartoon gerada pela IA para esta cena (PNG ou
   // JPEG, ver src/lib/image-gen.ts e src/lib/image-format.ts). Opcional: se
@@ -159,6 +163,36 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
           </div>
         </div>
       </div>
+
+      {/* Legenda: texto integral narrado nesta cena (fica visível durante
+          toda a duração do áudio, já que a imagem do slide é estática por
+          cena inteira — ver src/lib/render.ts). Não é sincronizada palavra a
+          palavra (o TTS usado não devolve timestamps por palavra), mas cobre
+          a cena inteira, como legenda de filme por frase. */}
+      {input.narrationText && (
+        <div
+          style={{
+            display: "flex",
+            margin: "0 80px 28px 80px",
+            padding: "22px 36px",
+            borderRadius: 16,
+            background: "rgba(0,0,0,0.4)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              color: "#f2f6fb",
+              fontSize: 32,
+              fontWeight: 700,
+              lineHeight: 1.4,
+              maxWidth: 1760,
+            }}
+          >
+            {input.narrationText}
+          </div>
+        </div>
+      )}
 
       {/* Rodapé: título + barra de progresso */}
       <div
