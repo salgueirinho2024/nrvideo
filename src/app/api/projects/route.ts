@@ -4,6 +4,7 @@ import { projects } from "@/db/schema";
 import { desc } from "drizzle-orm";
 import { inngest } from "@/inngest/client";
 import { AVAILABLE_VOICES } from "@/lib/tts";
+import { MIN_TARGET_MINUTES, MAX_TARGET_MINUTES } from "@/lib/gemini";
 
 // Sem isso, o Next.js pode cachear esta rota estaticamente (já que ela não
 // usa cookies/headers), fazendo o front-end ficar preso mostrando o mesmo
@@ -33,7 +34,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { sourceText?: string; voice?: string };
+  let body: { sourceText?: string; voice?: string; targetMinutes?: number };
   try {
     body = await req.json();
   } catch {
@@ -59,6 +60,14 @@ export async function POST(req: NextRequest) {
       ? body.voice
       : AVAILABLE_VOICES[0].id;
 
+  const targetMinutes = Math.min(
+    MAX_TARGET_MINUTES,
+    Math.max(
+      MIN_TARGET_MINUTES,
+      Number.isFinite(body.targetMinutes) ? Number(body.targetMinutes) : 5
+    )
+  );
+
   try {
     const [project] = await db
       .insert(projects)
@@ -66,6 +75,7 @@ export async function POST(req: NextRequest) {
         title: "Gerando título...",
         sourceText,
         voice,
+        targetMinutes,
         status: "pending",
       })
       .returning({ id: projects.id });

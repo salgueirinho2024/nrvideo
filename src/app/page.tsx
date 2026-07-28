@@ -46,6 +46,7 @@ export default function HomePage() {
   const router = useRouter();
   const [sourceText, setSourceText] = useState("");
   const [voice, setVoice] = useState("pt-BR-FranciscaNeural");
+  const [targetMinutes, setTargetMinutes] = useState(5);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -92,7 +93,7 @@ export default function HomePage() {
       const res = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceText, voice }),
+        body: JSON.stringify({ sourceText, voice, targetMinutes }),
       });
       const data = await res.json();
       if (!res.ok) {

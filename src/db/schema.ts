@@ -28,6 +28,9 @@ export const projects = pgTable("projects", {
   // Texto bruto da NR colado pelo usuário
   sourceText: text("source_text").notNull(),
   voice: text("voice").notNull().default("pt-BR-FranciscaNeural"),
+  // Duração alvo do vídeo, em minutos (usada para calibrar quantas cenas o
+  // Gemini deve gerar). Padrão de 5 min; suporta até 15 min.
+  targetMinutes: integer("target_minutes").notNull().default(5),
   status: text("status").$type<ProjectStatus>().notNull().default("pending"),
   errorMessage: text("error_message"),
   // URL do vídeo final no Vercel Blob, quando pronto

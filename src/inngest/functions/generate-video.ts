@@ -8,7 +8,7 @@ import { generateSceneImage } from "@/lib/image-gen";
 import { generateSlideImage } from "@/lib/slides";
 import { uploadFile } from "@/lib/storage";
 import { downloadToTemp } from "@/lib/download";
-import { getAudioDuration, renderFinalVideo } from "@/lib/render";
+import { getAudioDuration, renderSceneClip, concatFinalVideo } from "@/lib/render";
 import { promises as fsPromises } from "fs";
 
 export const generateVideoFunction = inngest.createFunction(
@@ -50,7 +50,7 @@ export const generateVideoFunction = inngest.createFunction(
         .set({ status: "generating_script", updatedAt: new Date() })
         .where(eq(projects.id, projectId));
 
-      const result = await generateScript(project.sourceText);
+      const result = await generateScript(project.sourceText, project.targetMinutes);
 
       await db.insert(scriptLogs).values({
         projectId,
@@ -130,6 +130,7 @@ export const generateVideoFunction = inngest.createFunction(
           sceneNumber: scene.order,
           totalScenes: script.sceneIds.length,
           screenText: scene.screenText,
+          narrationText: scene.narrationText,
           projectTitle: script.title,
           imagePath: sceneImagePath,
         });
@@ -159,40 +160,69 @@ export const generateVideoFunction = inngest.createFunction(
       sceneAssets.push(assets);
     }
 
-    // 3. Renderizar o vídeo final com FFmpeg e enviar para o Blob
-    const videoUrl = await step.run("render-and-upload-video", async () => {
+    // 3. Renderizar cada cena como um clipe mp4 (imagem + áudio) e subir
+    //    para o Blob — UMA etapa do Inngest por cena. Isso é o que torna
+    //    vídeos longos (muitas cenas) viáveis em serverless: se a function
+    //    tem um `maxDuration` limitado, renderizar tudo de uma vez numa
+    //    única invocação estouraria o tempo; renderizando cena a cena, cada
+    //    etapa é curta e, se falhar, o Inngest só reexecuta aquela etapa.
+    await step.run("mark-rendering", async () => {
       await db
         .update(projects)
         .set({ status: "rendering", updatedAt: new Date() })
         .where(eq(projects.id, projectId));
+    });
 
-      const localScenes = [];
-      for (const asset of sceneAssets) {
+    const clipUrls: string[] = [];
+    for (let i = 0; i < sceneAssets.length; i++) {
+      const asset = sceneAssets[i];
+      const clipUrl = await step.run(`render-clip-scene-${i}`, async () => {
         const imagePath = await downloadToTemp(asset.slideUrl, "png");
         const audioPath = await downloadToTemp(asset.audioUrl, "mp3");
-        localScenes.push({ imagePath, audioPath });
+
+        const clipPath = await renderSceneClip({ imagePath, audioPath }, i);
+        const url = await uploadFile(
+          clipPath,
+          `${projectId}/scene-${i}-clip.mp4`,
+          "video/mp4"
+        );
+
+        await Promise.all([
+          fsPromises.unlink(imagePath).catch(() => undefined),
+          fsPromises.unlink(audioPath).catch(() => undefined),
+          fsPromises.unlink(clipPath).catch(() => undefined),
+        ]);
+
+        return url;
+      });
+      clipUrls.push(clipUrl);
+    }
+
+    // 4. Concatenar os clipes já renderizados num único mp4 final ("-c
+    //    copy", sem re-encode — rápido mesmo com dezenas de clipes) e subir
+    //    para o Blob.
+    const videoUrl = await step.run("concat-and-upload-video", async () => {
+      const localClipPaths: string[] = [];
+      for (const url of clipUrls) {
+        localClipPaths.push(await downloadToTemp(url, "mp4"));
       }
 
-      const finalVideoPath = await renderFinalVideo(localScenes);
+      const finalVideoPath = await concatFinalVideo(localClipPaths);
       const url = await uploadFile(
         finalVideoPath,
         `${projectId}/final-video.mp4`,
         "video/mp4"
       );
 
-      // Limpeza best-effort dos arquivos temporários
       await Promise.all(
-        localScenes.flatMap((s) => [
-          fsPromises.unlink(s.imagePath).catch(() => undefined),
-          fsPromises.unlink(s.audioPath).catch(() => undefined),
-        ])
+        localClipPaths.map((p) => fsPromises.unlink(p).catch(() => undefined))
       );
       await fsPromises.unlink(finalVideoPath).catch(() => undefined);
 
       return url;
     });
 
-    // 4. Finalizar
+    // 5. Finalizar
     await step.run("finalize", async () => {
       await db
         .update(projects)
