@@ -77,6 +77,11 @@ cp .env.example .env.local
 
 - `DATABASE_URL`: crie um banco gratuito em [neon.tech](https://neon.tech)
 - `GEMINI_API_KEY`: gere em [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+- `POLLINATIONS_API_KEY` (opcional, mas recomendado): crie uma chave grátis
+  (tipo "secret") em [enter.pollinations.ai](https://enter.pollinations.ai)
+  via login com GitHub. Sem ela, a geração de ilustração das cenas roda no
+  tier anônimo do Pollinations, que só permite 1 requisição simultânea por
+  IP e costuma dar 429 "Queue full for IP" em produção
 - `BLOB_READ_WRITE_TOKEN`: crie um Blob store na Vercel (Storage → Create →
   Blob) e copie o token, ou rode `vercel env pull` se o projeto já estiver
   linkado
@@ -120,6 +125,15 @@ vídeo". Acompanhe o progresso na página do projeto.
 
 ## Observações / limitações conhecidas
 
+- **Pollinations (ilustração das cenas)**: o serviço migrou o endpoint de
+  imagem para `gen.pollinations.ai` com autenticação por API key. Sem
+  `POLLINATIONS_API_KEY` configurada, as chamadas rodam no tier "anonymous",
+  limitado a 1 requisição simultânea por IP — na Vercel, onde o IP de saída
+  é compartilhado entre muitos projetos, isso aparece como 429 "Queue full
+  for IP" mesmo com pouco tráfego próprio. `src/lib/image-gen.ts` já retenta
+  respeitando o `Retry-After` da resposta, mas o jeito mais confiável de
+  evitar o erro é configurar a chave gratuita (ver seção de variáveis de
+  ambiente acima).
 - **msedge-tts** depende de um serviço não-oficial da Microsoft; é gratuito
   mas pode ficar instável — se isso for um problema em produção, considere
   trocar `src/lib/tts.ts` por um provedor pago (Azure Speech, ElevenLabs
