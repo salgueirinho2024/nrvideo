@@ -1,29 +1,28 @@
-// Gera a ilustração de cada cena via Pollinations.ai. Trocado do Hugging
-// Face porque a conta usada neste projeto esgotou os créditos mensais
-// gratuitos de Inference Providers, e do Gemini porque o modelo de imagem
-// exige billing habilitado mesmo em uso baixo.
+// Gera a ilustração de cada cena via Cloudflare Workers AI (modelo
+// @cf/black-forest-labs/flux-1-schnell).
 //
-// ATENÇÃO (2026): o Pollinations migrou o endpoint de imagem do antigo
-// `image.pollinations.ai/prompt/...` (sem chave, anônimo) para
-// `gen.pollinations.ai/image/...`, com autenticação por API key (Bearer) e
-// billing em "Pollen". Sem chave, a chamada cai no tier "anonymous" — que já
-// gerou o erro 429 "Queue full for IP" (fila de 1 requisição simultânea por
-// IP, comum na Vercel onde o IP de saída é compartilhado entre projetos) e
-// agora também passou a devolver 402 "Insufficient balance" para requests
-// totalmente anônimos, mesmo o modelo `flux` sendo documentado como gratuito
-// e ilimitado (ver https://github.com/pollinations/pollinations, seção
-// Pollen FAQ) — esse benefício parece exigir conta registrada, não valendo
-// mais para tráfego 100% anônimo sem chave. Ou seja: criar uma chave
-// gratuita em https://enter.pollinations.ai (login via GitHub, sem cartão)
-// deixou de ser só uma otimização de cota e passou a ser necessário para o
-// serviço funcionar de forma confiável.
+// HISTÓRICO: antes usava Hugging Face (esgotou os créditos gratuitos de
+// Inference Providers), depois o Gemini (modelo de imagem exige billing
+// habilitado mesmo em uso baixo), depois o Pollinations.ai (gen.pollinations.ai)
+// — que documentava o modelo flux como "gratuito e ilimitado, sempre", mas na
+// prática passou a cobrar Pollen por imagem mesmo pra esse modelo, e contas
+// novas/anônimas ficam com saldo 0, gerando erro 402 "Insufficient balance"
+// (ver https://github.com/pollinations/pollinations/issues/8417, onde a
+// própria comunidade pede pra reduzir esse custo do flux).
 //
-// Trade-off consciente: mesmo autenticado, o Pollinations não tem SLA de
-// disponibilidade e moderação de conteúdo mais simples que provedores
-// comerciais — mas resolve o bloqueio atual sem custo. Se no futuro for
-// preciso mais confiabilidade, dá para trocar por um provedor pago sem
-// mexer no resto do pipeline (a função generateSceneImage mantém a mesma
-// assinatura).
+// Trocado para Cloudflare Workers AI porque o tier free de lá é genuinamente
+// gratuito e sem cartão: 10.000 "neurons" por dia, resetando à meia-noite UTC,
+// suficiente pra várias centenas de imagens/dia nesse caso de uso (ver
+// https://developers.cloudflare.com/workers-ai/platform/pricing/). O modelo
+// flux-1-schnell é uma versão rápida/destilada do mesmo Flux usado antes.
+//
+// Trade-off consciente: o tier free da Cloudflare também não tem SLA de
+// disponibilidade, e o limite diário é compartilhado entre TODOS os modelos
+// de IA usados na mesma conta Cloudflare (não só imagem) — se o projeto
+// crescer muito ou a conta for usada pra outras coisas, pode esbarrar no teto
+// diário. Se no futuro for preciso mais confiabilidade/volume, dá pra trocar
+// de provedor sem mexer no resto do pipeline (a função generateSceneImage
+// mantém a mesma assinatura).
 
 import path from "path";
 import os from "os";
@@ -31,26 +30,22 @@ import { promises as fs } from "fs";
 import { nanoid } from "nanoid";
 import { detectImageFormat } from "./image-format";
 
-const POLLINATIONS_ENDPOINT = "https://gen.pollinations.ai/image";
-// Chave opcional — ver POLLINATIONS_API_KEY em .env.example. Sem ela, cai no
-// tier "anonymous" (bem mais restrito, ver comentário acima).
-const POLLINATIONS_API_KEY = process.env.POLLINATIONS_API_KEY;
+const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
+const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+const CLOUDFLARE_MODEL = "@cf/black-forest-labs/flux-1-schnell";
 
 const STYLE_SUFFIX =
   "flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters or words in the image, wide 16:9 cinematic composition, subject centered with room around it for text overlay";
 
 const MAX_ATTEMPTS = 4;
-// Backoff usado quando o Pollinations NÃO manda um `Retry-After` (ex.:
-// timeout de rede, 5xx sem esse header). Exponencial com jitter para evitar
-// que várias cenas retentando ao mesmo tempo colidam de novo no mesmo
-// segundo.
+// Backoff usado quando a Cloudflare NÃO manda um `Retry-After` (ex.: timeout
+// de rede, 5xx sem esse header). Exponencial com jitter para evitar que
+// várias cenas retentando ao mesmo tempo colidam de novo no mesmo segundo.
 const BASE_RETRY_DELAY_MS = 4000;
 // Teto de segurança para o valor de `Retry-After` — se o serviço mandar algo
 // absurdamente alto, não vale a pena travar o pipeline esperando.
 const MAX_RETRY_DELAY_MS = 30000;
-// Tempo máximo de espera por tentativa: gerações de imagem no Pollinations
-// podem demorar mais que uma chamada de API comum, especialmente em horários
-// de pico.
+// Tempo máximo de espera por tentativa.
 const REQUEST_TIMEOUT_MS = 45000;
 
 function sleep(ms: number) {
@@ -59,9 +54,8 @@ function sleep(ms: number) {
 
 /**
  * Calcula quanto esperar antes da próxima tentativa. Prioriza o header
- * `Retry-After` da resposta (em segundos, ou uma data HTTP) quando presente
- * — é a orientação oficial do Pollinations para 429/503 — e só cai para o
- * backoff exponencial com jitter quando o header não vem.
+ * `Retry-After` da resposta quando presente, e só cai para o backoff
+ * exponencial com jitter quando o header não vem.
  */
 function computeRetryDelayMs(attempt: number, retryAfterHeader: string | null): number {
   if (retryAfterHeader) {
@@ -79,18 +73,31 @@ function computeRetryDelayMs(attempt: number, retryAfterHeader: string | null): 
   return Math.min(exponential + jitter, MAX_RETRY_DELAY_MS);
 }
 
+type CloudflareAiResponse = {
+  success: boolean;
+  result?: { image?: string } | null;
+  errors?: Array<{ code?: number; message?: string }>;
+};
+
 /**
- * Faz UMA chamada de geração de imagem ao Pollinations. Lança erro com
- * mensagem específica e acionável em cada caso de falha conhecido, para que
- * o motivo real fique visível (no log e, a partir de generate-video.ts, no
- * banco/UI) em vez de a cena simplesmente sair sem ilustração. Quando a
+ * Faz UMA chamada de geração de imagem à Cloudflare Workers AI. Lança erro
+ * com mensagem específica e acionável em cada caso de falha conhecido, para
+ * que o motivo real fique visível (no log e, a partir de generate-video.ts,
+ * no banco/UI) em vez de a cena simplesmente sair sem ilustração. Quando a
  * falha é retentável, anexa `retryAfterMs` ao erro para o chamador decidir
  * quanto esperar.
  */
-async function callPollinationsImageApi(prompt: string): Promise<Buffer> {
-  const url =
-    `${POLLINATIONS_ENDPOINT}/${encodeURIComponent(prompt)}` +
-    `?width=1280&height=720&model=flux&seed=${Math.floor(Math.random() * 1_000_000)}`;
+async function callCloudflareImageApi(prompt: string): Promise<Buffer> {
+  if (!CLOUDFLARE_ACCOUNT_ID || !CLOUDFLARE_API_TOKEN) {
+    throw new Error(
+      "Cloudflare: CLOUDFLARE_ACCOUNT_ID e/ou CLOUDFLARE_API_TOKEN não configurados. " +
+        "Crie uma conta grátis em https://dash.cloudflare.com (sem cartão), pegue o " +
+        "Account ID e gere um API Token com permissão de Workers AI, e configure " +
+        "essas duas variáveis de ambiente."
+    );
+  }
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/run/${CLOUDFLARE_MODEL}`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -98,66 +105,77 @@ async function callPollinationsImageApi(prompt: string): Promise<Buffer> {
   let response: Response;
   try {
     response = await fetch(url, {
+      method: "POST",
       signal: controller.signal,
-      headers: POLLINATIONS_API_KEY
-        ? { Authorization: `Bearer ${POLLINATIONS_API_KEY}` }
-        : undefined,
+      headers: {
+        Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt,
+        seed: Math.floor(Math.random() * 1_000_000),
+        // steps: máximo 8 nesse modelo distillado — mais que isso não é
+        // aceito e não melhora a qualidade (ver docs da Cloudflare).
+        steps: 8,
+      }),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("abort")) {
       throw new Error(
-        `Pollinations: tempo esgotado (${REQUEST_TIMEOUT_MS / 1000}s) esperando a imagem ser gerada.`
+        `Cloudflare: tempo esgotado (${REQUEST_TIMEOUT_MS / 1000}s) esperando a imagem ser gerada.`
       );
     }
-    throw new Error(`Pollinations: falha de rede ao chamar a API. Detalhe: ${message}`);
+    throw new Error(`Cloudflare: falha de rede ao chamar a API. Detalhe: ${message}`);
   } finally {
     clearTimeout(timeout);
   }
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => "");
-    const retryAfterMs =
-      response.status === 429 || response.status === 503
-        ? computeRetryDelayMs(1, response.headers.get("retry-after"))
-        : undefined;
+  const retryAfterMs =
+    response.status === 429 || response.status === 503
+      ? computeRetryDelayMs(1, response.headers.get("retry-after"))
+      : undefined;
 
-    if (response.status === 429) {
-      const hint = POLLINATIONS_API_KEY
-        ? ""
-        : " Sem POLLINATIONS_API_KEY configurada — rodando no tier anonymous, que só permite 1 requisição simultânea por IP. Crie uma chave gratuita em https://enter.pollinations.ai para elevar esse limite.";
-      const err = new Error(
-        `Pollinations: limite de uso momentâneo atingido (429).${hint} Detalhe: ${errText}`
-      );
-      (err as Error & { retryAfterMs?: number }).retryAfterMs = retryAfterMs;
-      throw err;
-    }
-    if (response.status === 402) {
-      const hint = POLLINATIONS_API_KEY
-        ? " A chave configurada está sem saldo de Pollen — o modelo flux é gratuito e ilimitado, mas ainda assim depende de uma conta com saldo/registro válido. Confira o saldo em https://enter.pollinations.ai."
-        : " Sem POLLINATIONS_API_KEY configurada, o request cai no pool anônimo compartilhado, que a Pollinations parece ter deixado de tratar como gratuito para o modelo flux nesse endpoint novo (gen.pollinations.ai). Crie uma conta e uma chave gratuita em https://enter.pollinations.ai — o modelo flux continua gratuito e ilimitado para contas registradas — e configure POLLINATIONS_API_KEY.";
-      const err = new Error(`Pollinations: saldo insuficiente (402).${hint} Detalhe: ${errText}`);
-      (err as Error & { retryAfterMs?: number }).retryAfterMs = undefined;
-      throw err;
-    }
-    const err = new Error(`Pollinations Image API falhou (${response.status}): ${errText}`);
+  if (response.status === 401 || response.status === 403) {
+    const errText = await response.text().catch(() => "");
+    throw new Error(
+      `Cloudflare: autenticação falhou (${response.status}). Confira se ` +
+        `CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN estão corretos e se o token ` +
+        `tem permissão "Workers AI - Read". Detalhe: ${errText}`
+    );
+  }
+
+  if (response.status === 429) {
+    const err = new Error(
+      "Cloudflare: limite diário de neurons (cota gratuita) atingido por hoje. " +
+        "O limite reseta à meia-noite UTC. Confira o uso em " +
+        "https://dash.cloudflare.com > Workers AI > Usage."
+    );
     (err as Error & { retryAfterMs?: number }).retryAfterMs = retryAfterMs;
     throw err;
   }
 
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.startsWith("image/")) {
-    const text = await response.text().catch(() => "");
-    throw new Error(
-      `Pollinations não retornou uma imagem utilizável (content-type inesperado: ${contentType}). Detalhe: ${text.slice(0, 300)}`
-    );
+  let json: CloudflareAiResponse | null = null;
+  try {
+    json = (await response.json()) as CloudflareAiResponse;
+  } catch {
+    json = null;
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  if (arrayBuffer.byteLength === 0) {
-    throw new Error("Pollinations retornou uma imagem vazia para a cena.");
+  if (!response.ok || !json?.success || !json.result?.image) {
+    const errDetail =
+      json?.errors?.map((e) => `${e.code ?? "?"}: ${e.message ?? "erro desconhecido"}`).join("; ") ??
+      `HTTP ${response.status}`;
+    const err = new Error(`Cloudflare Workers AI falhou ao gerar a imagem da cena. Detalhe: ${errDetail}`);
+    (err as Error & { retryAfterMs?: number }).retryAfterMs = retryAfterMs;
+    throw err;
   }
-  return Buffer.from(arrayBuffer);
+
+  const buffer = Buffer.from(json.result.image, "base64");
+  if (buffer.length === 0) {
+    throw new Error("Cloudflare retornou uma imagem vazia para a cena.");
+  }
+  return buffer;
 }
 
 /**
@@ -165,11 +183,10 @@ async function callPollinationsImageApi(prompt: string): Promise<Buffer> {
  * visual, salva em um arquivo temporário e retorna o caminho local.
  *
  * Faz até MAX_ATTEMPTS tentativas antes de desistir, pois falhas transitórias
- * (fila cheia no tier anonymous, timeout em horário de pico, 5xx momentâneo)
- * são comuns nesse serviço e não devem derrubar a ilustração da cena inteira
- * na primeira tentativa. O intervalo entre tentativas respeita o
- * `Retry-After` do Pollinations quando presente, com backoff exponencial e
- * jitter como fallback.
+ * (timeout em horário de pico, 5xx momentâneo) são comuns e não devem
+ * derrubar a ilustração da cena inteira na primeira tentativa. O intervalo
+ * entre tentativas respeita o `Retry-After` quando presente, com backoff
+ * exponencial e jitter como fallback.
  */
 export async function generateSceneImage(imagePrompt: string): Promise<string> {
   const prompt = imagePrompt.toLowerCase().includes("cartoon")
@@ -179,10 +196,10 @@ export async function generateSceneImage(imagePrompt: string): Promise<string> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const buffer = await callPollinationsImageApi(prompt);
-      // O content-type do Pollinations nem sempre bate com os bytes reais
-      // (ver src/lib/image-format.ts) — detecta pela assinatura binária para
-      // que o arquivo salvo em disco já tenha a extensão certa.
+      const buffer = await callCloudflareImageApi(prompt);
+      // A Cloudflare retorna JPEG pra esse modelo, mas detecta pela
+      // assinatura binária (em vez de assumir) pra manter o arquivo salvo em
+      // disco com a extensão certa mesmo se isso mudar no futuro.
       const { ext } = detectImageFormat(buffer);
       const outPath = path.join(os.tmpdir(), `scene-img-${nanoid(8)}.${ext}`);
       await fs.writeFile(outPath, buffer);
