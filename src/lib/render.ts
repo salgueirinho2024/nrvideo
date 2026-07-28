@@ -5,6 +5,7 @@ import path from "path";
 import os from "os";
 import { promises as fs } from "fs";
 import { nanoid } from "nanoid";
+import { getMascotFrames } from "./mascot";
 
 if (ffmpegPath) {
   ffmpeg.setFfmpegPath(ffmpegPath as unknown as string);
@@ -12,6 +13,15 @@ if (ffmpegPath) {
 if (ffprobePath) {
   ffmpeg.setFfprobePath(ffprobePath);
 }
+
+// --- Mascote (bolha "falando" no canto, ver src/lib/mascot.tsx) ---
+// Tamanho final da bolha sobreposta ao vídeo (px) e distância das bordas.
+const MASCOT_DISPLAY_SIZE = 220;
+const MASCOT_MARGIN = 40;
+// Ritmo de troca entre os frames boca-fechada/boca-aberta (segundos). Não é
+// lip-sync real, só um ciclo constante que dá a sensação de "falando"
+// enquanto a cena tem narração.
+const MASCOT_MOUTH_TOGGLE_SECONDS = 0.18;
 
 export interface RenderScene {
   imagePath: string;
@@ -38,24 +48,50 @@ export function getAudioDuration(audioPath: string): Promise<number> {
  * única invocação de function serverless pode estourar o tempo limite.
  * Ver `generate-video.ts`.
  */
-export function renderSceneClip(scene: RenderScene, index: number): Promise<string> {
+export async function renderSceneClip(scene: RenderScene, index: number): Promise<string> {
   const outPath = path.join(os.tmpdir(), `scene-${index}-${nanoid(6)}.mp4`);
+  const { closedPath, openPath } = await getMascotFrames();
+
+  // Expressão booleana (reutilizada nos dois overlays) que alterna entre
+  // boca-fechada e boca-aberta a cada MASCOT_MOUTH_TOGGLE_SECONDS. A vírgula
+  // dentro de mod(...) precisa ser escapada com "\," porque, dentro de uma
+  // definição de filtro do FFmpeg, vírgula normalmente separa filtros — sem o
+  // escape o parser quebraria a expressão em dois filtros inválidos.
+  const toggle = `mod(floor(t/${MASCOT_MOUTH_TOGGLE_SECONDS})\\,2)`;
+  const mascotX = `W-w-${MASCOT_MARGIN}`;
+  const mascotY = `H-h-${MASCOT_MARGIN}`;
+
+  const filterComplex =
+    // Fundo: normaliza para 1920x1080, faz upscale (headroom de nitidez) e
+    // aplica um zoom lento e contínuo (Ken Burns) até 1.15x, centralizado.
+    `[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,scale=2880:1620,` +
+    `zoompan=z='min(zoom+0.0008,1.15)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30[bg];` +
+    // Redimensiona os dois frames do mascote pro tamanho final da bolha.
+    `[2:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[closed];` +
+    `[3:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[open];` +
+    // Sobrepõe um frame ou outro no canto inferior direito, alternando no
+    // tempo — só um dos dois fica visível (`enable`) a cada instante.
+    `[bg][closed]overlay=x=${mascotX}:y=${mascotY}:enable='eq(${toggle}\\,0)'[tmp];` +
+    `[tmp][open]overlay=x=${mascotX}:y=${mascotY}:enable='eq(${toggle}\\,1)'[vout]`;
+
   return new Promise((resolve, reject) => {
     ffmpeg()
       .input(scene.imagePath)
-      .loop()
+      .inputOptions(["-loop 1"])
       .input(scene.audioPath)
+      .input(closedPath)
+      .inputOptions(["-loop 1"])
+      .input(openPath)
+      .inputOptions(["-loop 1"])
+      .complexFilter(filterComplex)
       .outputOptions([
+        "-map [vout]",
+        "-map 1:a",
         "-c:v libx264",
-        "-tune stillimage",
         "-c:a aac",
         "-b:a 192k",
         "-pix_fmt yuv420p",
         "-shortest",
-        // Normaliza para 1920x1080, faz upscale (headroom de nitidez) e aplica
-        // um zoom lento e contínuo (Ken Burns) até 1.15x, centralizado. Dá uma
-        // sensação de movimento ao slide em vez de imagem totalmente parada.
-        "-vf scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,scale=2880:1620,zoompan=z='min(zoom+0.0008,1.15)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30",
       ])
       .output(outPath)
       .on("end", () => resolve(outPath))
