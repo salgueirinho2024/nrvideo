@@ -66,37 +66,79 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        background: "linear-gradient(135deg, #0f2c4c 0%, #143a63 100%)",
+        background: imageDataUri
+          ? "#0f2c4c"
+          : "linear-gradient(135deg, #0f2c4c 0%, #143a63 100%)",
         fontFamily: "Inter",
         position: "relative",
         padding: "0",
       }}
     >
-      {/* Elementos decorativos de fundo */}
-      <div
-        style={{
-          position: "absolute",
-          left: -140,
-          top: -160,
-          width: 520,
-          height: 520,
-          borderRadius: 260,
-          background: "rgba(255,255,255,0.04)",
-          display: "flex",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          right: -180,
-          bottom: -220,
-          width: 620,
-          height: 620,
-          borderRadius: 310,
-          background: "rgba(255,255,255,0.035)",
-          display: "flex",
-        }}
-      />
+      {/* Ilustração da cena como fundo de tela inteira. */}
+      {imageDataUri && (
+        <img
+          src={imageDataUri}
+          width={WIDTH}
+          height={HEIGHT}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            width: WIDTH,
+            height: HEIGHT,
+            objectFit: "cover",
+          }}
+        />
+      )}
+
+      {/* Scrim escuro sobre a imagem para o texto continuar legível em
+          qualquer cena, mais forte nas bordas superior/inferior (onde ficam
+          cabeçalho, legenda e rodapé) e mais leve no centro. */}
+      {imageDataUri && (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            width: WIDTH,
+            height: HEIGHT,
+            display: "flex",
+            background:
+              "linear-gradient(180deg, rgba(8,18,32,0.75) 0%, rgba(8,18,32,0.15) 22%, rgba(8,18,32,0.15) 55%, rgba(8,18,32,0.88) 100%)",
+          }}
+        />
+      )}
+
+      {/* Elementos decorativos de fundo — só quando não há ilustração, para
+          não competir visualmente com a imagem da cena. */}
+      {!imageDataUri && (
+        <>
+          <div
+            style={{
+              position: "absolute",
+              left: -140,
+              top: -160,
+              width: 520,
+              height: 520,
+              borderRadius: 260,
+              background: "rgba(255,255,255,0.04)",
+              display: "flex",
+            }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              right: -180,
+              bottom: -220,
+              width: 620,
+              height: 620,
+              borderRadius: 310,
+              background: "rgba(255,255,255,0.035)",
+              display: "flex",
+            }}
+          />
+        </>
+      )}
 
       {/* Cabeçalho */}
       <div
@@ -111,56 +153,27 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
         {`CENA ${input.sceneNumber} / ${input.totalScenes}`}
       </div>
 
-      {/* Corpo principal: ilustração + texto */}
+      {/* Corpo principal: texto da cena centralizado sobre a ilustração de
+          fundo (ou sobre o gradiente, quando não há imagem). */}
       <div
         style={{
           display: "flex",
           flex: 1,
-          alignItems: "center",
+          alignItems: "flex-end",
           padding: "24px 100px",
         }}
       >
         <div
           style={{
             display: "flex",
-            width: 560,
-            height: 560,
-            borderRadius: 32,
-            overflow: "hidden",
-            background: imageDataUri ? "transparent" : "rgba(255,255,255,0.06)",
-            flexShrink: 0,
+            color: "#ffffff",
+            fontSize: 60,
+            fontWeight: 700,
+            lineHeight: 1.3,
+            maxWidth: 1400,
           }}
         >
-          {imageDataUri && (
-            <img
-              src={imageDataUri}
-              width={560}
-              height={560}
-              style={{ objectFit: "cover" }}
-            />
-          )}
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            flex: 1,
-            paddingLeft: 72,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              color: "#ffffff",
-              fontSize: 60,
-              fontWeight: 700,
-              lineHeight: 1.3,
-              maxWidth: 1100,
-            }}
-          >
-            {input.screenText}
-          </div>
+          {input.screenText}
         </div>
       </div>
 
@@ -176,7 +189,7 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
             margin: "0 80px 28px 80px",
             padding: "22px 36px",
             borderRadius: 16,
-            background: "rgba(0,0,0,0.4)",
+            background: "rgba(0,0,0,0.45)",
           }}
         >
           <div
@@ -202,7 +215,7 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
           padding: "0 80px 56px 80px",
         }}
       >
-        <div style={{ display: "flex", color: "#5f88bb", fontSize: 26, marginBottom: 20 }}>
+        <div style={{ display: "flex", color: "#8fb4dd", fontSize: 26, marginBottom: 20 }}>
           {input.projectTitle}
         </div>
         <div
@@ -211,7 +224,7 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
             width: "100%",
             height: 10,
             borderRadius: 5,
-            background: "rgba(255,255,255,0.12)",
+            background: "rgba(255,255,255,0.18)",
           }}
         >
           <div

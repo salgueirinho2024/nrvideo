@@ -6,12 +6,17 @@
 // ATENÇÃO (2026): o Pollinations migrou o endpoint de imagem do antigo
 // `image.pollinations.ai/prompt/...` (sem chave, anônimo) para
 // `gen.pollinations.ai/image/...`, com autenticação por API key (Bearer) e
-// billing em "Pollen". Sem chave, a chamada ainda funciona no tier
-// "anonymous", mas com fila de apenas 1 requisição simultânea por IP — é
-// esse limite que gera o erro 429 "Queue full for IP" visto em produção,
-// especialmente na Vercel, onde o IP de saída é compartilhado entre muitos
-// projetos. Criar uma chave gratuita em https://enter.pollinations.ai
-// (login via GitHub) já eleva bastante essa cota, sem precisar de cartão.
+// billing em "Pollen". Sem chave, a chamada cai no tier "anonymous" — que já
+// gerou o erro 429 "Queue full for IP" (fila de 1 requisição simultânea por
+// IP, comum na Vercel onde o IP de saída é compartilhado entre projetos) e
+// agora também passou a devolver 402 "Insufficient balance" para requests
+// totalmente anônimos, mesmo o modelo `flux` sendo documentado como gratuito
+// e ilimitado (ver https://github.com/pollinations/pollinations, seção
+// Pollen FAQ) — esse benefício parece exigir conta registrada, não valendo
+// mais para tráfego 100% anônimo sem chave. Ou seja: criar uma chave
+// gratuita em https://enter.pollinations.ai (login via GitHub, sem cartão)
+// deixou de ser só uma otimização de cota e passou a ser necessário para o
+// serviço funcionar de forma confiável.
 //
 // Trade-off consciente: mesmo autenticado, o Pollinations não tem SLA de
 // disponibilidade e moderação de conteúdo mais simples que provedores
@@ -32,7 +37,7 @@ const POLLINATIONS_ENDPOINT = "https://gen.pollinations.ai/image";
 const POLLINATIONS_API_KEY = process.env.POLLINATIONS_API_KEY;
 
 const STYLE_SUFFIX =
-  "flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters or words in the image, square composition";
+  "flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters or words in the image, wide 16:9 cinematic composition, subject centered with room around it for text overlay";
 
 const MAX_ATTEMPTS = 4;
 // Backoff usado quando o Pollinations NÃO manda um `Retry-After` (ex.:
@@ -85,7 +90,7 @@ function computeRetryDelayMs(attempt: number, retryAfterHeader: string | null): 
 async function callPollinationsImageApi(prompt: string): Promise<Buffer> {
   const url =
     `${POLLINATIONS_ENDPOINT}/${encodeURIComponent(prompt)}` +
-    `?width=1024&height=1024&model=flux&seed=${Math.floor(Math.random() * 1_000_000)}`;
+    `?width=1280&height=720&model=flux&seed=${Math.floor(Math.random() * 1_000_000)}`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -125,6 +130,14 @@ async function callPollinationsImageApi(prompt: string): Promise<Buffer> {
         `Pollinations: limite de uso momentâneo atingido (429).${hint} Detalhe: ${errText}`
       );
       (err as Error & { retryAfterMs?: number }).retryAfterMs = retryAfterMs;
+      throw err;
+    }
+    if (response.status === 402) {
+      const hint = POLLINATIONS_API_KEY
+        ? " A chave configurada está sem saldo de Pollen — o modelo flux é gratuito e ilimitado, mas ainda assim depende de uma conta com saldo/registro válido. Confira o saldo em https://enter.pollinations.ai."
+        : " Sem POLLINATIONS_API_KEY configurada, o request cai no pool anônimo compartilhado, que a Pollinations parece ter deixado de tratar como gratuito para o modelo flux nesse endpoint novo (gen.pollinations.ai). Crie uma conta e uma chave gratuita em https://enter.pollinations.ai — o modelo flux continua gratuito e ilimitado para contas registradas — e configure POLLINATIONS_API_KEY.";
+      const err = new Error(`Pollinations: saldo insuficiente (402).${hint} Detalhe: ${errText}`);
+      (err as Error & { retryAfterMs?: number }).retryAfterMs = undefined;
       throw err;
     }
     const err = new Error(`Pollinations Image API falhou (${response.status}): ${errText}`);
