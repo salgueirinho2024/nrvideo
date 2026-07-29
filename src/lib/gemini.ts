@@ -31,6 +31,27 @@ const MAX_SCENES = 70; // teto de segurança (custo de API, tempo de render em s
 export const MIN_TARGET_MINUTES = 1;
 export const MAX_TARGET_MINUTES = 15;
 
+// Retry para erros transitórios do Gemini (503 "model overloaded"/UNAVAILABLE,
+// 429 rate limit) — mesmo padrão de backoff exponencial com jitter usado em
+// image-gen.ts. Sem isso, um único pico de indisponibilidade do Gemini
+// derruba o step generate-script inteiro e só é reintentado pelo Inngest
+// minutos depois (configurado via `retries` na function), então vale
+// resolver aqui dentro primeiro, em segundos.
+const MAX_ATTEMPTS = 4;
+const BASE_RETRY_DELAY_MS = 3000;
+const MAX_RETRY_DELAY_MS = 20000;
+const RETRYABLE_STATUS = new Set([429, 503]);
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function computeRetryDelayMs(attempt: number): number {
+  const exponential = BASE_RETRY_DELAY_MS * 2 ** (attempt - 1);
+  const jitter = Math.random() * BASE_RETRY_DELAY_MS;
+  return Math.min(exponential + jitter, MAX_RETRY_DELAY_MS);
+}
+
 function buildSystemPrompt(targetMinutes: number): string {
   const clampedMinutes = Math.min(
     MAX_TARGET_MINUTES,
@@ -73,33 +94,51 @@ export async function generateScript(
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: `${buildSystemPrompt(targetMinutes)}\n\n--- TEXTO DA NR ---\n${sourceText}`,
-            },
-          ],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.6,
-        responseMimeType: "application/json",
-        // Roteiros longos (~15 min / ~45-70 cenas) geram um JSON bem maior;
-        // o default do modelo pode truncar a resposta e quebrar o JSON.
-        maxOutputTokens: 32768,
+  const requestBody = JSON.stringify({
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `${buildSystemPrompt(targetMinutes)}\n\n--- TEXTO DA NR ---\n${sourceText}`,
+          },
+        ],
       },
-    }),
+    ],
+    generationConfig: {
+      temperature: 0.6,
+      responseMimeType: "application/json",
+      // Roteiros longos (~15 min / ~45-70 cenas) geram um JSON bem maior;
+      // o default do modelo pode truncar a resposta e quebrar o JSON.
+      maxOutputTokens: 32768,
+    },
   });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Gemini API falhou (${response.status}): ${errText}`);
+  let response: Response | null = null;
+  let lastErrText = "";
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: requestBody,
+    });
+
+    if (response.ok) break;
+
+    if (!RETRYABLE_STATUS.has(response.status) || attempt === MAX_ATTEMPTS) {
+      lastErrText = await response.text();
+      break;
+    }
+
+    lastErrText = await response.text();
+    console.error(
+      `generateScript: tentativa ${attempt}/${MAX_ATTEMPTS} falhou (${response.status}): ${lastErrText}`
+    );
+    await sleep(computeRetryDelayMs(attempt));
+  }
+
+  if (!response || !response.ok) {
+    throw new Error(`Gemini API falhou (${response?.status ?? "sem resposta"}): ${lastErrText}`);
   }
 
   const data = await response.json();
