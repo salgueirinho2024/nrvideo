@@ -33,59 +33,42 @@ const SILENCE_MIN_DURATION = 0.15; // pausas menores que isso são ignoradas (ev
 const MOUTH_FLAP_SECONDS = 0.16; // ritmo de abre/fecha da boca ENQUANTO está falando
 
 /**
- * Confere, sem depender do ffmpeg, que a string do filter_complex não está
- * com aspas/parênteses/colchetes desbalanceados antes de mandar pro ffmpeg.
+ * Confere que uma expressão de filtro do FFmpeg está com os parênteses
+ * balanceados antes de mandar pro ffmpeg.
  *
  * Motivo de existir: um erro de montagem aqui NÃO dá um erro claro do lado
  * do Node — o ffmpeg só devolve algo tipo "Error applying option 'fps' to
- * filter 'zoompan': Invalid argument", que não aponta pra causa real (uma
- * aspa ou fechamento faltando lá atrás na string). Já vimos em produção um
- * filter_complex chegando com pedaços faltando (ex.: ")':d=1:" e "[closed];"
- * sumidos) e o sintoma foi exatamente essa mensagem genérica do ffmpeg,
- * horas pra descobrir a causa real. Essa checagem falha na hora, com a
- * string inteira no erro, apontando exatamente o que está desbalanceado.
+ * filter 'zoompan': Invalid argument", que não aponta pra causa real.
+ *
+ * IMPORTANTE: não montamos mais o filter_complex como uma string gigante
+ * com aspas simples escritas na mão (era daí que vinha o erro de "número
+ * ímpar de aspas simples" / pedaços faltando). Agora passamos uma lista de
+ * filtros estruturados pro fluent-ffmpeg, que monta a string e coloca as
+ * aspas nos valores que precisam — sempre balanceadas.
  */
-function assertValidFilterComplex(filterComplex: string): void {
-  // Serializado via JSON.stringify (aspas simples/colchetes escapados, tudo
-  // em uma linha só) antes de entrar em qualquer mensagem de erro. Sem isso,
-  // dashboards de log (Vercel/Inngest) podem "prettify"/colapsar trechos com
-  // aspas ou colchetes na hora de exibir ou copiar, fazendo parecer que a
-  // string real está corrompida quando na verdade só o texto exibido está
-  // truncado. Com JSON.stringify não sobra nenhuma aspa simples ou colchete
-  // "cru" pro viewer tentar interpretar — só uma string escapada e plana.
-  const safe = JSON.stringify(filterComplex);
-
-  const quoteCount = (filterComplex.match(/'/g) || []).length;
-  if (quoteCount % 2 !== 0) {
+function assertBalancedExpr(name: string, expr: string): void {
+  // Aspas simples aqui dentro quebrariam a citação feita pelo fluent-ffmpeg.
+  if (expr.includes("'")) {
     throw new Error(
-      `filterComplex malformado: número ímpar de aspas simples (${quoteCount}), ` +
-        `o ffmpeg vai interpretar tudo depois da aspa órfã como parte de um valor só. ` +
-        `String completa (JSON-escaped): ${safe}`
+      `Expressão de filtro "${name}" não pode conter aspas simples: ${JSON.stringify(expr)}`
     );
   }
-
-  const bracketPairs: Array<[string, string]> = [
-    ["(", ")"],
-    ["[", "]"],
-  ];
-  for (const [open, close] of bracketPairs) {
-    let depth = 0;
-    for (const ch of filterComplex) {
-      if (ch === open) depth++;
-      else if (ch === close) depth--;
-      if (depth < 0) {
-        throw new Error(
-          `filterComplex malformado: '${close}' aparece sem '${open}' correspondente antes dele. ` +
-            `String completa (JSON-escaped): ${safe}`
-        );
-      }
-    }
-    if (depth !== 0) {
+  let depth = 0;
+  for (const ch of expr) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (depth < 0) {
       throw new Error(
-        `filterComplex malformado: ${depth} '${open}' sem fechamento correspondente ('${close}'). ` +
-          `String completa (JSON-escaped): ${safe}`
+        `Expressão de filtro "${name}" malformada: ')' sem '(' correspondente. ` +
+          `Expressão (JSON-escaped): ${JSON.stringify(expr)}`
       );
     }
+  }
+  if (depth !== 0) {
+    throw new Error(
+      `Expressão de filtro "${name}" malformada: ${depth} '(' sem fechamento. ` +
+        `Expressão (JSON-escaped): ${JSON.stringify(expr)}`
+    );
   }
 }
 
@@ -177,7 +160,7 @@ function parseSilenceLog(log: string, duration: number): SilenceInterval[] {
 function buildIsSpeakingExpr(silences: SilenceInterval[]): string {
   if (silences.length === 0) return "1";
   return silences
-    .map((s) => `(1-between(t\\,${s.start.toFixed(3)}\\,${s.end.toFixed(3)}))`)
+    .map((s) => `(1-between(t,${s.start.toFixed(3)},${s.end.toFixed(3)}))`)
     .join("*");
 }
 
@@ -203,8 +186,8 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   // e aberto) — nada de alternar entre várias expressões, que é o que
   // causava aquele "pulo" de tamanho entre frames com zoom levemente
   // diferente.
-  const flapToggle = `mod(floor(t/${MOUTH_FLAP_SECONDS})\\,2)`;
-  const openEnable = `(${isSpeaking})*eq(${flapToggle}\\,1)`;
+  const flapToggle = `mod(floor(t/${MOUTH_FLAP_SECONDS}),2)`;
+  const openEnable = `(${isSpeaking})*eq(${flapToggle},1)`;
   const closedEnable = `1-(${openEnable})`;
 
   const mascotX = `W-w-${MASCOT_MARGIN}`;
@@ -215,55 +198,96 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   const closedInputIdx = 2;
   const openInputIdx = 3;
 
-  const scaleFilters =
-    `[${closedInputIdx}:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[closed];` +
-    `[${openInputIdx}:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[open];`;
-
-  const overlayFilters =
-    `[bg][closed]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${closedEnable}\\,0)'[ov0];` +
-    `[ov0][open]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${openEnable}\\,0)'[vout];`;
-
-  // Base do fundo: normaliza para 1920x1080 e faz upscale 2x (headroom de
-  // nitidez pro zoompan cortar sem pixelizar). Comum às duas variantes.
-  const bgBase =
-    `[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,scale=2880:1620,`;
-
-  let bgZoompan: string;
+  let zoomExpr: string;
+  let xExpr: string;
+  let yExpr: string;
   if (scene.highlight) {
     // Cena de destaque: zoom mais forte + pan diagonal. A direção alterna
-    // conforme o índice da cena (par = canto inferior-direito, ímpar =
-    // canto superior-esquerdo) pra não repetir sempre o mesmo movimento
-    // quando há várias cenas de destaque seguidas. `shift` cresce de 0 a 1
-    // ao longo da duração real da cena (frame `on` / total de frames),
-    // então o pan termina de percorrer o trajeto exatamente quando a
-    // narração acaba, não antes nem depois.
+    // conforme o índice da cena pra não repetir sempre o mesmo movimento.
+    // `shift` cresce de 0 a 1 ao longo da duração real da cena, então o pan
+    // termina exatamente quando a narração acaba.
     const totalFrames = Math.max(1, Math.round(duration * RENDER_FPS));
     const panDirection = index % 2 === 0 ? 1 : -1;
     const shift = `min(on/${totalFrames},1)`;
-    const zoomExpr = `min(zoom+${HIGHLIGHT_ZOOM_RATE},${HIGHLIGHT_MAX_ZOOM})`;
-    // (iw/2-(iw/zoom/2)) é o deslocamento que centraliza o corte; multiplicar
-    // por (1 + direção*fração*shift) desloca esse ponto central em direção a
-    // uma das bordas conforme o vídeo avança, criando o pan.
-    const xExpr = `(iw/2-(iw/zoom/2))*(1+(${panDirection})*${HIGHLIGHT_PAN_FRACTION}*${shift})`;
-    const yExpr = `(ih/2-(ih/zoom/2))*(1+(${panDirection})*${HIGHLIGHT_PAN_FRACTION}*${shift})`;
-    bgZoompan = `zoompan=z='${zoomExpr}':d=1:x='${xExpr}':y='${yExpr}':s=1920x1080:fps=${RENDER_FPS}[bg];`;
+    zoomExpr = `min(zoom+${HIGHLIGHT_ZOOM_RATE},${HIGHLIGHT_MAX_ZOOM})`;
+    // (iw/2-(iw/zoom/2)) centraliza o corte; multiplicar por
+    // (1 + direção*fração*shift) desloca esse centro rumo a uma das bordas.
+    xExpr = `(iw/2-(iw/zoom/2))*(1+(${panDirection})*${HIGHLIGHT_PAN_FRACTION}*${shift})`;
+    yExpr = `(ih/2-(ih/zoom/2))*(1+(${panDirection})*${HIGHLIGHT_PAN_FRACTION}*${shift})`;
   } else {
-    // Cena normal: zoom lento e contínuo, centralizado (comportamento original).
-    bgZoompan =
-      `zoompan=z='min(zoom+${NORMAL_ZOOM_RATE},${NORMAL_MAX_ZOOM})':d=1:` +
-      `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${RENDER_FPS}[bg];`;
+    // Cena normal: zoom lento e contínuo, centralizado.
+    zoomExpr = `min(zoom+${NORMAL_ZOOM_RATE},${NORMAL_MAX_ZOOM})`;
+    xExpr = `iw/2-(iw/zoom/2)`;
+    yExpr = `ih/2-(ih/zoom/2)`;
   }
 
-  const filterComplex =
-    bgBase +
-    bgZoompan +
-    // Redimensiona os 2 frames do mascote (fechado e aberto) pro tamanho final da bolha.
-    scaleFilters +
-    // Sobrepõe boca fechada e depois boca aberta (habilitada só durante os
-    // trechos de fala) no canto superior direito.
-    overlayFilters;
+  const closedEnableExpr = `gt(${closedEnable},0)`;
+  const openEnableExpr = `gt(${openEnable},0)`;
 
-  assertValidFilterComplex(filterComplex);
+  assertBalancedExpr("zoompan:z", zoomExpr);
+  assertBalancedExpr("zoompan:x", xExpr);
+  assertBalancedExpr("zoompan:y", yExpr);
+  assertBalancedExpr("overlay:enable(closed)", closedEnableExpr);
+  assertBalancedExpr("overlay:enable(open)", openEnableExpr);
+
+  // Filtros estruturados: o fluent-ffmpeg monta a string do filter_complex
+  // (inclusive as aspas em volta dos valores com vírgula) — nada de
+  // concatenar aspas na mão.
+  const filters: ffmpeg.FilterSpecification[] = [
+    {
+      filter: "scale",
+      options: { w: 1920, h: 1080, force_original_aspect_ratio: "decrease" },
+      inputs: "0:v",
+      outputs: "bg0",
+    },
+    {
+      filter: "pad",
+      options: { w: 1920, h: 1080, x: "(ow-iw)/2", y: "(oh-ih)/2" },
+      inputs: "bg0",
+      outputs: "bg1",
+    },
+    // Upscale 2x: headroom de nitidez pro zoompan cortar sem pixelizar.
+    { filter: "scale", options: { w: 2880, h: 1620 }, inputs: "bg1", outputs: "bg2" },
+    {
+      filter: "zoompan",
+      options: {
+        z: zoomExpr,
+        d: 1,
+        x: xExpr,
+        y: yExpr,
+        s: "1920x1080",
+        fps: RENDER_FPS,
+      },
+      inputs: "bg2",
+      outputs: "bg",
+    },
+    // Os 2 frames do mascote (fechado e aberto) no tamanho final da bolha.
+    {
+      filter: "scale",
+      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
+      inputs: `${closedInputIdx}:v`,
+      outputs: "closed",
+    },
+    {
+      filter: "scale",
+      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
+      inputs: `${openInputIdx}:v`,
+      outputs: "open",
+    },
+    // Boca fechada e, por cima, boca aberta (só durante os trechos de fala).
+    {
+      filter: "overlay",
+      options: { x: mascotX, y: mascotY, enable: closedEnableExpr },
+      inputs: ["bg", "closed"],
+      outputs: "ov0",
+    },
+    {
+      filter: "overlay",
+      options: { x: mascotX, y: mascotY, enable: openEnableExpr },
+      inputs: ["ov0", "open"],
+      outputs: "vout",
+    },
+  ];
 
   const command = ffmpeg()
     .input(scene.imagePath)
@@ -276,7 +300,7 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
 
   return new Promise((resolve, reject) => {
     command
-      .complexFilter(filterComplex)
+      .complexFilter(filters)
       .outputOptions([
         "-map [vout]",
         "-map 1:a",
