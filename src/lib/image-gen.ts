@@ -114,9 +114,13 @@ async function callCloudflareImageApi(prompt: string): Promise<Buffer> {
       body: JSON.stringify({
         prompt,
         seed: Math.floor(Math.random() * 1_000_000),
-        // steps: máximo 8 nesse modelo distillado — mais que isso não é
-        // aceito e não melhora a qualidade (ver docs da Cloudflare).
-        steps: 8,
+        // steps: o flux-1-schnell é otimizado justamente para poucos steps
+        // (é a versão "destilada" do Flux, feita pra convergir rápido).
+        // 4 steps já dá resultado visualmente equivalente a 8 pra ilustração
+        // cartoon simples, e cada step custa 9.60 neurons — reduzir pela
+        // metade quase dobra quantas imagens cabem na cota diária gratuita
+        // de 10.000 neurons (ver https://developers.cloudflare.com/workers-ai/platform/pricing/).
+        steps: 4,
       }),
     });
   } catch (err) {
@@ -151,7 +155,11 @@ async function callCloudflareImageApi(prompt: string): Promise<Buffer> {
         "O limite reseta à meia-noite UTC. Confira o uso em " +
         "https://dash.cloudflare.com > Workers AI > Usage."
     );
-    (err as Error & { retryAfterMs?: number }).retryAfterMs = retryAfterMs;
+    // Cota diária não volta em segundos/minutos — diferente de um 429 comum
+    // de rate limit, retentar aqui só atrasa o pipeline sem chance real de
+    // sucesso. Marca como não-retentável para o loop de generateSceneImage
+    // desistir na hora em vez de gastar MAX_ATTEMPTS tentativas com backoff.
+    (err as Error & { retryAfterMs?: number; dailyQuotaExceeded?: boolean }).dailyQuotaExceeded = true;
     throw err;
   }
 
@@ -210,6 +218,13 @@ export async function generateSceneImage(imagePrompt: string): Promise<string> {
       console.error(
         `generateSceneImage: tentativa ${attempt}/${MAX_ATTEMPTS} falhou: ${message}`
       );
+      const dailyQuotaExceeded = (err as Error & { dailyQuotaExceeded?: boolean })?.dailyQuotaExceeded;
+      if (dailyQuotaExceeded) {
+        // Sem sentido retentar: a cota só volta à meia-noite UTC. Desiste
+        // na hora pra essa cena (fica sem ilustração, conforme tratado em
+        // generate-video.ts) em vez de gastar minutos em retries inúteis.
+        break;
+      }
       if (attempt < MAX_ATTEMPTS) {
         const retryAfterMs = (err as Error & { retryAfterMs?: number })?.retryAfterMs;
         const delay = retryAfterMs ?? computeRetryDelayMs(attempt, null);
