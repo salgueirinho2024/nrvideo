@@ -150,16 +150,32 @@ async function callCloudflareImageApi(prompt: string): Promise<Buffer> {
   }
 
   if (response.status === 429) {
+    // Nem todo 429 da Cloudflare é cota diária esgotada — a maioria é rate
+    // limit de curto prazo (requisições rápidas demais em sequência), que
+    // se resolve sozinho com espera curta e DEVE ser retentado. A cota
+    // diária de verdade vem com o código de erro específico 4006 no corpo
+    // da resposta (mensagem "you have used up your daily free allocation
+    // of 10,000 neurons..."). Só nesse caso não vale a pena retentar.
+    const errBody = await response.json().catch(() => null) as CloudflareAiResponse | null;
+    const isDailyQuotaCode = errBody?.errors?.some((e) => e.code === 4006) ?? false;
+
+    if (isDailyQuotaCode) {
+      const err = new Error(
+        "Cloudflare: limite diário de neurons (cota gratuita) atingido por hoje. " +
+          "O limite reseta à meia-noite UTC. Confira o uso em " +
+          "https://dash.cloudflare.com > Workers AI > Usage."
+      );
+      (err as Error & { dailyQuotaExceeded?: boolean }).dailyQuotaExceeded = true;
+      throw err;
+    }
+
+    const errDetail =
+      errBody?.errors?.map((e) => `${e.code ?? "?"}: ${e.message ?? "erro desconhecido"}`).join("; ") ??
+      "sem detalhe no corpo da resposta";
     const err = new Error(
-      "Cloudflare: limite diário de neurons (cota gratuita) atingido por hoje. " +
-        "O limite reseta à meia-noite UTC. Confira o uso em " +
-        "https://dash.cloudflare.com > Workers AI > Usage."
+      `Cloudflare: rate limit de curto prazo (429, não é cota diária). Detalhe: ${errDetail}`
     );
-    // Cota diária não volta em segundos/minutos — diferente de um 429 comum
-    // de rate limit, retentar aqui só atrasa o pipeline sem chance real de
-    // sucesso. Marca como não-retentável para o loop de generateSceneImage
-    // desistir na hora em vez de gastar MAX_ATTEMPTS tentativas com backoff.
-    (err as Error & { retryAfterMs?: number; dailyQuotaExceeded?: boolean }).dailyQuotaExceeded = true;
+    (err as Error & { retryAfterMs?: number }).retryAfterMs = retryAfterMs;
     throw err;
   }
 
