@@ -32,6 +32,54 @@ const SILENCE_NOISE_THRESHOLD_DB = -30; // abaixo disso é considerado silêncio
 const SILENCE_MIN_DURATION = 0.15; // pausas menores que isso são ignoradas (evita "piscar" a boca em micro-pausas)
 const MOUTH_FLAP_SECONDS = 0.16; // ritmo de abre/fecha da boca ENQUANTO está falando
 
+/**
+ * Confere, sem depender do ffmpeg, que a string do filter_complex não está
+ * com aspas/parênteses/colchetes desbalanceados antes de mandar pro ffmpeg.
+ *
+ * Motivo de existir: um erro de montagem aqui NÃO dá um erro claro do lado
+ * do Node — o ffmpeg só devolve algo tipo "Error applying option 'fps' to
+ * filter 'zoompan': Invalid argument", que não aponta pra causa real (uma
+ * aspa ou fechamento faltando lá atrás na string). Já vimos em produção um
+ * filter_complex chegando com pedaços faltando (ex.: ")':d=1:" e "[closed];"
+ * sumidos) e o sintoma foi exatamente essa mensagem genérica do ffmpeg,
+ * horas pra descobrir a causa real. Essa checagem falha na hora, com a
+ * string inteira no erro, apontando exatamente o que está desbalanceado.
+ */
+function assertValidFilterComplex(filterComplex: string): void {
+  const quoteCount = (filterComplex.match(/'/g) || []).length;
+  if (quoteCount % 2 !== 0) {
+    throw new Error(
+      `filterComplex malformado: número ímpar de aspas simples (${quoteCount}), ` +
+        `o ffmpeg vai interpretar tudo depois da aspa órfã como parte de um valor só. ` +
+        `String completa: ${filterComplex}`
+    );
+  }
+
+  const bracketPairs: Array<[string, string]> = [
+    ["(", ")"],
+    ["[", "]"],
+  ];
+  for (const [open, close] of bracketPairs) {
+    let depth = 0;
+    for (const ch of filterComplex) {
+      if (ch === open) depth++;
+      else if (ch === close) depth--;
+      if (depth < 0) {
+        throw new Error(
+          `filterComplex malformado: '${close}' aparece sem '${open}' correspondente antes dele. ` +
+            `String completa: ${filterComplex}`
+        );
+      }
+    }
+    if (depth !== 0) {
+      throw new Error(
+        `filterComplex malformado: ${depth} '${open}' sem fechamento correspondente ('${close}'). ` +
+          `String completa: ${filterComplex}`
+      );
+    }
+  }
+}
+
 export interface RenderScene {
   imagePath: string;
   audioPath: string;
@@ -205,6 +253,8 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     // Sobrepõe boca fechada e depois boca aberta (habilitada só durante os
     // trechos de fala) no canto superior direito.
     overlayFilters;
+
+  assertValidFilterComplex(filterComplex);
 
   const command = ffmpeg()
     .input(scene.imagePath)
