@@ -46,12 +46,21 @@ const MOUTH_FLAP_SECONDS = 0.16; // ritmo de abre/fecha da boca ENQUANTO está f
  * string inteira no erro, apontando exatamente o que está desbalanceado.
  */
 function assertValidFilterComplex(filterComplex: string): void {
+  // Serializado via JSON.stringify (aspas simples/colchetes escapados, tudo
+  // em uma linha só) antes de entrar em qualquer mensagem de erro. Sem isso,
+  // dashboards de log (Vercel/Inngest) podem "prettify"/colapsar trechos com
+  // aspas ou colchetes na hora de exibir ou copiar, fazendo parecer que a
+  // string real está corrompida quando na verdade só o texto exibido está
+  // truncado. Com JSON.stringify não sobra nenhuma aspa simples ou colchete
+  // "cru" pro viewer tentar interpretar — só uma string escapada e plana.
+  const safe = JSON.stringify(filterComplex);
+
   const quoteCount = (filterComplex.match(/'/g) || []).length;
   if (quoteCount % 2 !== 0) {
     throw new Error(
       `filterComplex malformado: número ímpar de aspas simples (${quoteCount}), ` +
         `o ffmpeg vai interpretar tudo depois da aspa órfã como parte de um valor só. ` +
-        `String completa: ${filterComplex}`
+        `String completa (JSON-escaped): ${safe}`
     );
   }
 
@@ -67,14 +76,14 @@ function assertValidFilterComplex(filterComplex: string): void {
       if (depth < 0) {
         throw new Error(
           `filterComplex malformado: '${close}' aparece sem '${open}' correspondente antes dele. ` +
-            `String completa: ${filterComplex}`
+            `String completa (JSON-escaped): ${safe}`
         );
       }
     }
     if (depth !== 0) {
       throw new Error(
         `filterComplex malformado: ${depth} '${open}' sem fechamento correspondente ('${close}'). ` +
-          `String completa: ${filterComplex}`
+          `String completa (JSON-escaped): ${safe}`
       );
     }
   }
