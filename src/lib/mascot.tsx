@@ -6,11 +6,13 @@
 // finais já saem prontos do repositório, então esta função só resolve os
 // caminhos (sem chamar Satori, sem chamar nenhuma API).
 //
-// Diferente da primeira versão (1 frame fechado + 1 frame aberto), agora
-// temos 1 frame de boca fechada e VÁRIOS frames de boca aberta com
-// expressões diferentes — o render alterna entre eles enquanto a pessoa
-// está falando, pra ficar mais natural (ver OPEN_FRAME_SWITCH_SECONDS em
-// render.ts), em vez de repetir sempre a mesma boca aberta.
+// Apenas 2 frames: boca fechada e boca aberta. Já tivemos 3 expressões
+// diferentes de boca aberta alternando, mas isso ficava "pulando" (as fotos
+// tinham nível de zoom levemente diferente entre si, então o rosto mudava
+// de tamanho a cada troca) — voltamos pro par simples fechado/aberto.
+// A foto de boca fechada também foi reprocessada (recorte central ~86% +
+// reescala) pra bater com o nível de zoom da foto de boca aberta e não dar
+// esse "pulo" de tamanho ao trocar de frame.
 //
 // A "fala" é sincronizada com o áudio de verdade: src/lib/render.ts detecta
 // os trechos de silêncio (via `silencedetect` do FFmpeg) e só alterna pro
@@ -24,17 +26,13 @@ function mascotAssetPath(file: string): string {
 }
 
 /**
- * Retorna o caminho do frame de boca fechada e os caminhos de todos os
- * frames de boca aberta (expressões variadas). Sem processamento em
- * runtime — os PNGs já vêm prontos do repositório (ver public/mascot/).
+ * Retorna o caminho do frame de boca fechada e o caminho do frame de boca
+ * aberta. Sem processamento em runtime — os PNGs já vêm prontos do
+ * repositório (ver public/mascot/).
  */
-export async function getMascotFrames(): Promise<{ closedPath: string; openPaths: string[] }> {
+export async function getMascotFrames(): Promise<{ closedPath: string; openPath: string }> {
   return {
     closedPath: mascotAssetPath("mouth-closed.png"),
-    openPaths: [
-      mascotAssetPath("mouth-open-1.png"),
-      mascotAssetPath("mouth-open-2.png"),
-      mascotAssetPath("mouth-open-3.png"),
-    ],
+    openPath: mascotAssetPath("mouth-open.png"),
   };
 }
