@@ -13,6 +13,16 @@ export interface GeneratedScene {
   // true para as cenas mais importantes do roteiro (ver buildSystemPrompt).
   // Usada em render.ts para dar um Ken Burns mais dinâmico só nessas cenas.
   highlight: boolean;
+  // true para até 3 cenas do roteiro inteiro (ver buildSystemPrompt) que
+  // devem usar um clipe de vídeo real de banco de imagens em vez da
+  // ilustração cartoon estática — ver src/lib/stock-video.ts. Escolhidas
+  // pelo próprio Gemini como as cenas mais "mostráveis" em vídeo real (ex:
+  // alguém de fato usando um EPI específico), não necessariamente as mesmas
+  // marcadas como `highlight`.
+  useStockVideo: boolean;
+  // Palavras-chave EM INGLÊS (2 a 5 palavras) para buscar um vídeo de banco
+  // que combine com a cena — só relevante quando useStockVideo = true.
+  videoSearchQuery: string;
 }
 
 export interface GeneratedScript {
@@ -71,14 +81,16 @@ Regras:
 - Use linguagem clara, direta e didática, como se estivesse explicando para um trabalhador que vai assistir ao vídeo, não para um jurista.
 - "screenText" é um texto curto (título ou 1 frase) que aparece escrito na tela durante a cena — deve resumir a ideia central da cena, não repetir a narração palavra por palavra.
 - A duração alvo do vídeo final é de aproximadamente ${clampedMinutes} minuto(s). Como cada cena dura ~15-25s de áudio, isso equivale a cerca de ${estimatedScenes} cenas — gere um número de cenas próximo desse alvo (nunca menos que ${MIN_SCENES}, nunca mais que ${MAX_SCENES}). Para vídeos mais longos, aprofunde: divida os pontos principais da norma em mais cenas, com exemplos e situações práticas, além de cobrir introdução ao tema, riscos envolvidos, medidas de prevenção/EPIs quando aplicável, e uma cena de encerramento/reforço.
-- "imagePrompt": uma descrição visual, EM INGLÊS, do que a ilustração da cena deve mostrar — será usada por um gerador de imagens de IA. Descreva uma cena concreta e específica ao conteúdo daquela fala (pessoas, ações, ambiente, objetos/EPIs relevantes), não um resumo genérico. Sempre termine a descrição com o sufixo de estilo: "flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image". Mantenha entre 1 e 3 frases.
+- "imagePrompt": uma descrição visual, EM INGLÊS, do que a ilustração da cena deve mostrar — será usada por um gerador de imagens de IA. Descreva uma cena concreta e específica ao conteúdo daquela fala (pessoas, ações, ambiente, objetos/EPIs relevantes), não um resumo genérico. Sempre termine a descrição com o sufixo de estilo: "flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image". Mantenha entre 1 e 3 frases. Preencha "imagePrompt" SEMPRE, mesmo em cenas com "useStockVideo": true (é o plano B caso não se ache um vídeo de banco adequado para a cena).
 - "highlight": true ou false. Marque true em cerca de 1 a cada 3-4 cenas — as que representam o ponto mais importante ou de maior impacto do treinamento (ex: um risco grave, uma consequência de não usar o EPI, um procedimento crítico), não necessariamente a introdução ou o encerramento. Essas cenas recebem um efeito de câmera mais dinâmico no vídeo final. Nunca marque todas nem nenhuma cena como true.
+- "useStockVideo": true ou false. Marque true em NO MÁXIMO 3 cenas de TODO o roteiro (nunca mais que 3, pode ser menos ou nenhuma se o tema não render bom vídeo real) — escolha as cenas mais concretas e "filmáveis" com pessoas/ações reais e genéricas o bastante para existir em um banco de vídeos de estoque (ex: "trabalhador colocando capacete", "pessoa calçando luvas de proteção", "operário usando protetor auricular numa fábrica"). Evite marcar cenas abstratas, jurídicas ou introdutórias/de encerramento — prefira cenas que mostrem literalmente uma ação ou um EPI em uso. As outras cenas ficam com "useStockVideo": false e usam a ilustração cartoon normal.
+- "videoSearchQuery": só relevante quando "useStockVideo" é true (nas demais cenas, mande string vazia "") — 2 a 5 palavras-chave EM INGLÊS, genéricas e visuais, para buscar um vídeo real de banco de imagens que combine com a cena (ex: "worker wearing safety helmet", "hands putting on protective gloves", "factory worker safety glasses"). Não inclua nome de marca, texto ou termos jurídicos.
 - Responda APENAS com um JSON válido, sem markdown, sem comentários, no formato exato:
 
 {
   "title": "Título curto do treinamento",
   "scenes": [
-    { "order": 1, "narrationText": "...", "screenText": "...", "imagePrompt": "A construction worker putting on a yellow safety helmet before entering a busy building site, flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image", "highlight": false }
+    { "order": 1, "narrationText": "...", "screenText": "...", "imagePrompt": "A construction worker putting on a yellow safety helmet before entering a busy building site, flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image", "highlight": false, "useStockVideo": true, "videoSearchQuery": "worker wearing safety helmet construction" }
   ]
 }`;
 }
@@ -160,18 +172,37 @@ export async function generateScript(
     throw new Error("O roteiro gerado não contém cenas válidas.");
   }
 
+  const normalizedScenes = parsed.scenes.map((s, i) => ({
+    order: s.order ?? i + 1,
+    narrationText: s.narrationText,
+    screenText: s.screenText,
+    imagePrompt:
+      typeof s.imagePrompt === "string" && s.imagePrompt.trim().length > 0
+        ? s.imagePrompt.trim()
+        : `Illustration representing: ${s.screenText}. flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image`,
+    highlight: Boolean(s.highlight),
+    useStockVideo: Boolean(s.useStockVideo),
+    videoSearchQuery:
+      typeof s.videoSearchQuery === "string" ? s.videoSearchQuery.trim() : "",
+  }));
+
+  // Rede de segurança: nunca confiar cegamente que o modelo respeitou o
+  // "no máximo 3" do prompt. Se vier mais que isso, mantém só as 3
+  // primeiras marcações e desliga o resto (essas cenas caem de volta pra
+  // ilustração cartoon normal, que é sempre gerada de qualquer forma).
+  const MAX_STOCK_VIDEO_SCENES = 3;
+  let stockVideoCount = 0;
+  for (const scene of normalizedScenes) {
+    if (!scene.useStockVideo) continue;
+    stockVideoCount++;
+    if (stockVideoCount > MAX_STOCK_VIDEO_SCENES) {
+      scene.useStockVideo = false;
+    }
+  }
+
   return {
     title: parsed.title || "Treinamento de Segurança do Trabalho",
-    scenes: parsed.scenes.map((s, i) => ({
-      order: s.order ?? i + 1,
-      narrationText: s.narrationText,
-      screenText: s.screenText,
-      imagePrompt:
-        typeof s.imagePrompt === "string" && s.imagePrompt.trim().length > 0
-          ? s.imagePrompt.trim()
-          : `Illustration representing: ${s.screenText}. flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image`,
-      highlight: Boolean(s.highlight),
-    })),
+    scenes: normalizedScenes,
     raw: data,
   };
 }

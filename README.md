@@ -47,12 +47,25 @@ public/fonts/Inter-Bold.woff   # Fonte usada nos slides
 ## Como funciona o pipeline (Inngest)
 
 1. **generate-script**: chama o Gemini com o texto da NR, recebe um roteiro
-   em JSON (título + cenas), grava as cenas no banco.
-2. **generate-assets-scene-N** (uma etapa por cena): gera o áudio (TTS) e o
-   slide (PNG) de cada cena, envia ambos para o Vercel Blob.
+   em JSON (título + cenas), grava as cenas no banco. O próprio Gemini
+   escolhe até **3 cenas** que se beneficiam de um vídeo real (ex: alguém
+   usando um EPI específico) e gera para elas uma `videoSearchQuery` em
+   inglês (o banco de vídeos é em inglês); as demais cenas continuam usando
+   imagem estática.
+2. **generate-assets-scene-N** (uma etapa por cena): gera o áudio (TTS)
+   sempre. Para o slide/imagem, verifica `useStockVideo`:
+   - se `true` e `PEXELS_API_KEY` estiver configurada, busca e baixa um
+     clipe do Pexels que combine com `videoSearchQuery`;
+   - se a busca falhar (sem resultado, sem chave, erro de rede), cai de
+     volta automaticamente para o fluxo normal de imagem estática — a cena
+     nunca fica sem mídia por causa disso.
 3. **render-and-upload-video**: baixa os assets de todas as cenas para
-   `/tmp`, monta um clipe mp4 por cena (imagem + áudio) com FFmpeg, concatena
-   tudo e envia o vídeo final para o Blob.
+   `/tmp`. Cenas com vídeo real usam `renderSceneClipVideo` (o vídeo de
+   fundo entra em loop/crop para preencher o quadro, com o texto/legenda e
+   o mascote sobrepostos em modo transparente); as demais continuam usando
+   `renderSceneClip` (imagem + Ken Burns), com a mesma animação de boca do
+   mascote nos dois casos. No fim concatena tudo e envia o vídeo final para
+   o Blob.
 4. **finalize**: marca o projeto como `done` com a URL do vídeo.
 
 Cada etapa é isolada via `step.run`, então se uma falhar o Inngest só
@@ -85,12 +98,23 @@ cp .env.example .env.local
 - `BLOB_READ_WRITE_TOKEN`: crie um Blob store na Vercel (Storage → Create →
   Blob) e copie o token, ou rode `vercel env pull` se o projeto já estiver
   linkado
+- `PEXELS_API_KEY` (opcional, mas necessário para vídeos temáticos): chave
+  gratuita em [pexels.com/api](https://www.pexels.com/api/) usada para
+  buscar clipes reais de banco de vídeo para até 3 cenas do roteiro (ex: um
+  trabalhador colocando EPI). Sem essa chave, o pipeline simplesmente não
+  tenta usar vídeo de banco e volta a gerar todas as cenas como imagem
+  estática (Ken Burns), sem quebrar nada.
 
 ### 3. Criar as tabelas no banco
 
 ```bash
 npm run db:push
 ```
+
+> Se você já tinha o banco criado de uma versão anterior, rode `npm run
+> db:push` de novo depois de atualizar — a tabela `scenes` ganhou colunas
+> novas (`mediaType`, `videoSearchQuery`, `sceneVideoUrl`) usadas pelos
+> vídeos temáticos.
 
 ### 4. Rodar o Next.js e o Inngest Dev Server (em terminais separados)
 
@@ -145,3 +169,21 @@ vídeo". Acompanhe o progresso na página do projeto.
 - O roteiro gerado pelo Gemini deve ser revisado por um profissional de
   segurança do trabalho antes de ser usado como treinamento oficial — o
   modelo pode cometer erros de interpretação da norma.
+- **Sincronização labial do mascote**: a boca "de bico" era causada pela
+  foto de boca aberta usada (`mouth-open-1.png`, a única alinhada certinho
+  com o enquadramento da boca fechada, mas com formato de "O"). Isso foi
+  corrigido realinhando uma foto de boca aberta mais natural (com os dentes
+  aparecendo) via detecção de características (ORB + RANSAC) para bater
+  exatamente no enquadramento de `mouth-closed.png`, e trocando o corte seco
+  fechada↔aberta por um ciclo de 4 passos com frame intermediário
+  (fechada → meio-aberta → aberta → meio-aberta) em `render.ts`. Se algum
+  dia quiser trocar a foto-base de novo, use `mouth-open-2.png` ou
+  `mouth-open-3.png` como fonte e repita o realinhamento — usar qualquer uma
+  das fotos de boca aberta sem realinhar volta a causar o "pulo".
+- **Vídeos temáticos (Pexels)**: a variedade depende do que existe no banco
+  gratuito do Pexels para a busca em inglês gerada pelo Gemini; termos muito
+  específicos de norma brasileira podem não ter resultado, caso em que a
+  cena cai automaticamente para imagem estática. Para clipes 100% sob
+  medida (e não apenas os melhores disponíveis no banco), a alternativa
+  seria geração de vídeo por IA (ex: Replicate/fal.ai), que tem custo por
+  vídeo gerado — não implementada por enquanto.

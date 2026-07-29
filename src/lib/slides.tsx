@@ -33,6 +33,13 @@ interface SlideInput {
   // JPEG, ver src/lib/image-gen.ts e src/lib/image-format.ts). Opcional: se
   // faltar/falhar, o slide é renderizado só com o texto, sem quebrar o vídeo.
   imagePath?: string | null;
+  // Quando true, gera um PNG com fundo TRANSPARENTE (sem imagem embutida,
+  // sem gradiente de fundo) contendo só cabeçalho/texto/legenda/rodapé —
+  // pensado para ser sobreposto, no FFmpeg, em cima de um vídeo de banco
+  // real (ver src/lib/stock-video.ts e renderSceneClipVideo em render.ts),
+  // que já é o "fundo" da cena nesse caso. `imagePath` é ignorado quando
+  // essa flag está ligada.
+  transparentBackground?: boolean;
 }
 
 /**
@@ -43,9 +50,10 @@ interface SlideInput {
 export async function generateSlideImage(input: SlideInput): Promise<string> {
   const font = await loadFont();
   const progress = Math.min(1, input.sceneNumber / input.totalScenes);
+  const transparent = input.transparentBackground ?? false;
 
   let imageDataUri: string | null = null;
-  if (input.imagePath) {
+  if (input.imagePath && !transparent) {
     try {
       const buf = await fs.readFile(input.imagePath);
       // O Pollinations às vezes devolve JPEG mesmo quando a extensão salva é
@@ -59,6 +67,12 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
     }
   }
 
+  // O scrim escuro (gradiente que garante legibilidade do texto) e a
+  // ausência dos círculos decorativos fazem sentido tanto quando há uma
+  // ilustração de fundo quanto quando o fundo é transparente (nesse caso,
+  // vai existir um vídeo real por baixo, no compositing do FFmpeg).
+  const showScrim = Boolean(imageDataUri) || transparent;
+
   const markup = (
     <div
       style={{
@@ -66,7 +80,9 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        background: imageDataUri
+        background: transparent
+          ? "transparent"
+          : imageDataUri
           ? "#0f2c4c"
           : "linear-gradient(135deg, #0f2c4c 0%, #143a63 100%)",
         fontFamily: "Inter",
@@ -74,7 +90,9 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
         padding: "0",
       }}
     >
-      {/* Ilustração da cena como fundo de tela inteira. */}
+      {/* Ilustração da cena como fundo de tela inteira. Nunca renderizada em
+          modo transparente — nesse caso o "fundo" é um vídeo real composto
+          depois, no FFmpeg (ver renderSceneClipVideo em render.ts). */}
       {imageDataUri && (
         <img
           src={imageDataUri}
@@ -91,10 +109,11 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
         />
       )}
 
-      {/* Scrim escuro sobre a imagem para o texto continuar legível em
-          qualquer cena, mais forte nas bordas superior/inferior (onde ficam
-          cabeçalho, legenda e rodapé) e mais leve no centro. */}
-      {imageDataUri && (
+      {/* Scrim escuro sobre a imagem (ou sobre o vídeo, em modo
+          transparente) para o texto continuar legível em qualquer cena,
+          mais forte nas bordas superior/inferior (onde ficam cabeçalho,
+          legenda e rodapé) e mais leve no centro. */}
+      {showScrim && (
         <div
           style={{
             position: "absolute",
@@ -109,9 +128,9 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
         />
       )}
 
-      {/* Elementos decorativos de fundo — só quando não há ilustração, para
-          não competir visualmente com a imagem da cena. */}
-      {!imageDataUri && (
+      {/* Elementos decorativos de fundo — só quando não há ilustração NEM
+          vídeo, para não competir visualmente com a imagem/vídeo da cena. */}
+      {!showScrim && (
         <>
           <div
             style={{

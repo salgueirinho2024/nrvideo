@@ -5,10 +5,16 @@ import { eq } from "drizzle-orm";
 import { generateScript } from "@/lib/gemini";
 import { synthesizeSpeech } from "@/lib/tts";
 import { generateSceneImage } from "@/lib/image-gen";
+import { fetchStockVideo } from "@/lib/stock-video";
 import { generateSlideImage } from "@/lib/slides";
 import { uploadFile } from "@/lib/storage";
 import { downloadToTemp } from "@/lib/download";
-import { getAudioDuration, renderSceneClip, concatFinalVideo } from "@/lib/render";
+import {
+  getAudioDuration,
+  renderSceneClip,
+  renderSceneClipVideo,
+  concatFinalVideo,
+} from "@/lib/render";
 import { promises as fsPromises } from "fs";
 
 export const generateVideoFunction = inngest.createFunction(
@@ -67,6 +73,8 @@ export const generateVideoFunction = inngest.createFunction(
             screenText: s.screenText,
             imagePrompt: s.imagePrompt,
             highlight: s.highlight,
+            useStockVideo: s.useStockVideo,
+            videoSearchQuery: s.videoSearchQuery || null,
           }))
         )
         .returning({ id: scenes.id, order: scenes.order });
@@ -89,8 +97,16 @@ export const generateVideoFunction = inngest.createFunction(
       };
     });
 
-    // 2. Para cada cena: gerar áudio (TTS) + slide, e enviar para o Blob
-    const sceneAssets: { audioUrl: string; slideUrl: string; highlight: boolean }[] = [];
+    // 2. Para cada cena: gerar áudio (TTS) + slide (ou vídeo de banco +
+    //    overlay, para as até 3 cenas marcadas useStockVideo), e enviar
+    //    para o Blob
+    const sceneAssets: {
+      audioUrl: string;
+      slideUrl: string;
+      highlight: boolean;
+      mediaType: "image" | "video";
+      sceneVideoUrl: string | null;
+    }[] = [];
     for (let i = 0; i < script.sceneIds.length; i++) {
       const sceneId = script.sceneIds[i];
       const assets = await step.run(`generate-assets-scene-${i}`, async () => {
@@ -111,6 +127,68 @@ export const generateVideoFunction = inngest.createFunction(
           "audio/mpeg"
         );
         await fsPromises.unlink(audioPath).catch(() => undefined);
+
+        // --- Vídeo de banco (até 3 cenas do roteiro, ver gemini.ts) ---
+        // Tentado ANTES da ilustração estática: se der certo, a cena usa o
+        // vídeo real como fundo (renderSceneClipVideo) e nem precisa da
+        // ilustração cartoon. Se falhar por qualquer motivo (sem
+        // PEXELS_API_KEY, sem resultado pra query, rede etc.), cai de volta
+        // pro fluxo normal de imagem — mesma filosofia de resiliência já
+        // usada pra falha de geração de imagem (ver imageError abaixo).
+        let sceneVideoUrl: string | null = null;
+        let videoError: string | null = null;
+        if (scene.useStockVideo && scene.videoSearchQuery) {
+          try {
+            const stockVideoPath = await fetchStockVideo(scene.videoSearchQuery);
+            sceneVideoUrl = await uploadFile(
+              stockVideoPath,
+              `${projectId}/scene-${scene.order}-stock-video.mp4`,
+              "video/mp4"
+            );
+            await fsPromises.unlink(stockVideoPath).catch(() => undefined);
+          } catch (err) {
+            videoError = err instanceof Error ? err.message : String(err);
+            console.error(`Falha ao buscar vídeo de banco da cena ${scene.order}:`, err);
+          }
+        }
+
+        if (sceneVideoUrl) {
+          // --- Overlay de texto transparente (cena com vídeo de banco) ---
+          const overlayPath = await generateSlideImage({
+            sceneNumber: scene.order,
+            totalScenes: script.sceneIds.length,
+            screenText: scene.screenText,
+            narrationText: scene.narrationText,
+            projectTitle: script.title,
+            transparentBackground: true,
+          });
+          const overlayUrl = await uploadFile(
+            overlayPath,
+            `${projectId}/scene-${scene.order}-overlay.png`,
+            "image/png"
+          );
+          await fsPromises.unlink(overlayPath).catch(() => undefined);
+
+          await db
+            .update(scenes)
+            .set({
+              audioUrl,
+              audioDurationSeconds: Math.ceil(duration),
+              sceneVideoUrl,
+              slideImageUrl: overlayUrl,
+              videoError: null,
+              assetsReady: true,
+            })
+            .where(eq(scenes.id, sceneId));
+
+          return {
+            audioUrl,
+            slideUrl: overlayUrl,
+            highlight: scene.highlight,
+            mediaType: "video" as const,
+            sceneVideoUrl,
+          };
+        }
 
         // --- Ilustração cartoon gerada por IA a partir do assunto da cena ---
         let sceneImagePath: string | null = null;
@@ -152,11 +230,18 @@ export const generateVideoFunction = inngest.createFunction(
             audioDurationSeconds: Math.ceil(duration),
             slideImageUrl: slideUrl,
             imageError,
+            videoError,
             assetsReady: true,
           })
           .where(eq(scenes.id, sceneId));
 
-        return { audioUrl, slideUrl, highlight: scene.highlight };
+        return {
+          audioUrl,
+          slideUrl,
+          highlight: scene.highlight,
+          mediaType: "image" as const,
+          sceneVideoUrl: null,
+        };
       });
       sceneAssets.push(assets);
     }
@@ -178,13 +263,33 @@ export const generateVideoFunction = inngest.createFunction(
     for (let i = 0; i < sceneAssets.length; i++) {
       const asset = sceneAssets[i];
       const clipUrl = await step.run(`render-clip-scene-${i}`, async () => {
-        const imagePath = await downloadToTemp(asset.slideUrl, "png");
         const audioPath = await downloadToTemp(asset.audioUrl, "mp3");
 
-        const clipPath = await renderSceneClip(
-          { imagePath, audioPath, highlight: asset.highlight },
-          i
-        );
+        let clipPath: string;
+        if (asset.mediaType === "video" && asset.sceneVideoUrl) {
+          const videoPath = await downloadToTemp(asset.sceneVideoUrl, "mp4");
+          const overlayImagePath = await downloadToTemp(asset.slideUrl, "png");
+
+          clipPath = await renderSceneClipVideo(
+            { videoPath, overlayImagePath, audioPath },
+            i
+          );
+
+          await Promise.all([
+            fsPromises.unlink(videoPath).catch(() => undefined),
+            fsPromises.unlink(overlayImagePath).catch(() => undefined),
+          ]);
+        } else {
+          const imagePath = await downloadToTemp(asset.slideUrl, "png");
+
+          clipPath = await renderSceneClip(
+            { imagePath, audioPath, highlight: asset.highlight },
+            i
+          );
+
+          await fsPromises.unlink(imagePath).catch(() => undefined);
+        }
+
         const url = await uploadFile(
           clipPath,
           `${projectId}/scene-${i}-clip.mp4`,
@@ -192,7 +297,6 @@ export const generateVideoFunction = inngest.createFunction(
         );
 
         await Promise.all([
-          fsPromises.unlink(imagePath).catch(() => undefined),
           fsPromises.unlink(audioPath).catch(() => undefined),
           fsPromises.unlink(clipPath).catch(() => undefined),
         ]);

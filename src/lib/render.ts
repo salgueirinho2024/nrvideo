@@ -30,7 +30,15 @@ const MASCOT_MARGIN = 36;
 // silêncio, fica sempre no frame de boca fechada.
 const SILENCE_NOISE_THRESHOLD_DB = -30; // abaixo disso é considerado silêncio
 const SILENCE_MIN_DURATION = 0.15; // pausas menores que isso são ignoradas (evita "piscar" a boca em micro-pausas)
-const MOUTH_FLAP_SECONDS = 0.16; // ritmo de abre/fecha da boca ENQUANTO está falando
+// Duração de CADA passo do ciclo fechado → meio → aberto → meio → (repete).
+// 4 passos por ciclo, então um ciclo completo dura 4x isso (~0.32s => ~3.1
+// "batidas" de boca por segundo, ritmo natural de fala). Trocamos de um
+// corte seco fechado/aberto (2 frames) para esse ciclo de 4 passos com um
+// frame intermediário (mouth-half.png) especificamente para suavizar a
+// transição — era o corte abrupto, mais que a velocidade em si, que dava a
+// sensação de "pulando" relatada. Ver mascot.tsx para o porquê da troca do
+// frame de boca aberta em si (também corrigia o "bico").
+const MOUTH_STEP_SECONDS = 0.08;
 
 /**
  * Confere que uma expressão de filtro do FFmpeg está com os parênteses
@@ -174,29 +182,32 @@ function buildIsSpeakingExpr(silences: SilenceInterval[]): string {
  */
 export async function renderSceneClip(scene: RenderScene, index: number): Promise<string> {
   const outPath = path.join(os.tmpdir(), `scene-${index}-${nanoid(6)}.mp4`);
-  const { closedPath, openPath } = await getMascotFrames();
+  const { closedPath, halfPath, openPath } = await getMascotFrames();
 
   const duration = await getAudioDuration(scene.audioPath);
   const silences = await detectSilenceIntervals(scene.audioPath, duration);
   const isSpeaking = buildIsSpeakingExpr(silences);
 
-  // Ritmo de abre/fecha ENQUANTO está falando (0/1 alternando a cada
-  // MOUTH_FLAP_SECONDS). Fora dos trechos de fala, isSpeaking = 0 anula essa
-  // parte e o resultado fica sempre "fechado". Só 2 estados agora (fechado
-  // e aberto) — nada de alternar entre várias expressões, que é o que
-  // causava aquele "pulo" de tamanho entre frames com zoom levemente
-  // diferente.
-  const flapToggle = `mod(floor(t/${MOUTH_FLAP_SECONDS}),2)`;
-  const openEnable = `(${isSpeaking})*eq(${flapToggle},1)`;
-  const closedEnable = `1-(${openEnable})`;
+  // Ciclo de 4 passos ENQUANTO está falando: fechado(0) -> meio(1) ->
+  // aberto(2) -> meio(3) -> fechado(0)... Fora dos trechos de fala,
+  // isSpeaking = 0 zera os frames de meio/aberto e o resultado fica sempre
+  // "fechado". Usar um frame intermediário (mouth-half.png) em vez de pular
+  // direto de fechado pra aberto é o que suaviza a transição e tira a
+  // sensação de "pulando" -- o corte seco entre 2 estados, não a velocidade
+  // em si, era o problema.
+  const phase = `mod(floor(t/${MOUTH_STEP_SECONDS}),4)`;
+  const openEnable = `(${isSpeaking})*eq(${phase},2)`;
+  const halfEnable = `(${isSpeaking})*(eq(${phase},1)+eq(${phase},3))`;
+  const closedEnable = `1-(${openEnable})-(${halfEnable})`;
 
   const mascotX = `W-w-${MASCOT_MARGIN}`;
   const mascotY = `${MASCOT_MARGIN}`; // canto SUPERIOR direito
 
   // Índices dos inputs do ffmpeg: 0 = imagem da cena, 1 = áudio,
-  // 2 = boca fechada, 3 = boca aberta.
+  // 2 = boca fechada, 3 = boca meio-aberta, 4 = boca aberta.
   const closedInputIdx = 2;
-  const openInputIdx = 3;
+  const halfInputIdx = 3;
+  const openInputIdx = 4;
 
   let zoomExpr: string;
   let xExpr: string;
@@ -222,12 +233,14 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   }
 
   const closedEnableExpr = `gt(${closedEnable},0)`;
+  const halfEnableExpr = `gt(${halfEnable},0)`;
   const openEnableExpr = `gt(${openEnable},0)`;
 
   assertBalancedExpr("zoompan:z", zoomExpr);
   assertBalancedExpr("zoompan:x", xExpr);
   assertBalancedExpr("zoompan:y", yExpr);
   assertBalancedExpr("overlay:enable(closed)", closedEnableExpr);
+  assertBalancedExpr("overlay:enable(half)", halfEnableExpr);
   assertBalancedExpr("overlay:enable(open)", openEnableExpr);
 
   // Filtros estruturados: o fluent-ffmpeg monta a string do filter_complex
@@ -261,7 +274,8 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
       inputs: "bg2",
       outputs: "bg",
     },
-    // Os 2 frames do mascote (fechado e aberto) no tamanho final da bolha.
+    // Os 3 frames do mascote (fechado, meio-aberto e aberto) no tamanho
+    // final da bolha.
     {
       filter: "scale",
       options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
@@ -271,10 +285,17 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     {
       filter: "scale",
       options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
+      inputs: `${halfInputIdx}:v`,
+      outputs: "half",
+    },
+    {
+      filter: "scale",
+      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
       inputs: `${openInputIdx}:v`,
       outputs: "open",
     },
-    // Boca fechada e, por cima, boca aberta (só durante os trechos de fala).
+    // Boca fechada e, por cima, meio-aberta e aberta (só durante os trechos
+    // de fala) -- o passo intermediário é o que suaviza a transição.
     {
       filter: "overlay",
       options: { x: mascotX, y: mascotY, enable: closedEnableExpr },
@@ -283,8 +304,14 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     },
     {
       filter: "overlay",
+      options: { x: mascotX, y: mascotY, enable: halfEnableExpr },
+      inputs: ["ov0", "half"],
+      outputs: "ov1",
+    },
+    {
+      filter: "overlay",
       options: { x: mascotX, y: mascotY, enable: openEnableExpr },
-      inputs: ["ov0", "open"],
+      inputs: ["ov1", "open"],
       outputs: "vout",
     },
   ];
@@ -294,6 +321,162 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     .inputOptions(["-loop 1"])
     .input(scene.audioPath)
     .input(closedPath)
+    .inputOptions(["-loop 1"])
+    .input(halfPath)
+    .inputOptions(["-loop 1"])
+    .input(openPath)
+    .inputOptions(["-loop 1"]);
+
+  return new Promise((resolve, reject) => {
+    command
+      .complexFilter(filters)
+      .outputOptions([
+        "-map [vout]",
+        "-map 1:a",
+        "-c:v libx264",
+        "-c:a aac",
+        "-b:a 192k",
+        "-pix_fmt yuv420p",
+        "-shortest",
+      ])
+      .output(outPath)
+      .on("end", () => resolve(outPath))
+      .on("error", reject)
+      .run();
+  });
+}
+
+export interface RenderVideoScene {
+  // Clipe de vídeo de banco (Pexels) baixado localmente — vira o "fundo" da
+  // cena, no lugar de uma imagem estática com Ken Burns. Ver stock-video.ts.
+  videoPath: string;
+  // PNG transparente (cabeçalho, texto, legenda, barra de progresso) gerado
+  // por generateSlideImage({ transparentBackground: true, ... }) — ver
+  // slides.tsx. Sobreposto por cima do vídeo de fundo.
+  overlayImagePath: string;
+  audioPath: string;
+}
+
+/**
+ * Gera um clipe de vídeo (mp4) para UMA cena que usa um vídeo de banco real
+ * como fundo (em vez de imagem estática + Ken Burns) — ver
+ * RenderVideoScene. Mesma lógica de mascote falando (fechado/meio/aberto
+ * sincronizado com o áudio) que renderSceneClip, só troca a origem do
+ * "fundo": aqui é vídeo decodificado quadro a quadro, não uma imagem com
+ * zoompan.
+ *
+ * Duração final = duração do áudio da narração (`-shortest` no output):
+ * - Se o vídeo de banco for mais curto que a narração, `-stream_loop -1`
+ *   no input faz ele repetir em loop até o áudio acabar.
+ * - Se for mais longo, simplesmente é cortado no fim do áudio.
+ */
+export async function renderSceneClipVideo(
+  scene: RenderVideoScene,
+  index: number
+): Promise<string> {
+  const outPath = path.join(os.tmpdir(), `scene-video-${index}-${nanoid(6)}.mp4`);
+  const { closedPath, halfPath, openPath } = await getMascotFrames();
+
+  const duration = await getAudioDuration(scene.audioPath);
+  const silences = await detectSilenceIntervals(scene.audioPath, duration);
+  const isSpeaking = buildIsSpeakingExpr(silences);
+
+  const phase = `mod(floor(t/${MOUTH_STEP_SECONDS}),4)`;
+  const openEnable = `(${isSpeaking})*eq(${phase},2)`;
+  const halfEnable = `(${isSpeaking})*(eq(${phase},1)+eq(${phase},3))`;
+  const closedEnable = `1-(${openEnable})-(${halfEnable})`;
+
+  const closedEnableExpr = `gt(${closedEnable},0)`;
+  const halfEnableExpr = `gt(${halfEnable},0)`;
+  const openEnableExpr = `gt(${openEnable},0)`;
+
+  assertBalancedExpr("overlay:enable(closed)", closedEnableExpr);
+  assertBalancedExpr("overlay:enable(half)", halfEnableExpr);
+  assertBalancedExpr("overlay:enable(open)", openEnableExpr);
+
+  const mascotX = `W-w-${MASCOT_MARGIN}`;
+  const mascotY = `${MASCOT_MARGIN}`;
+
+  // Índices dos inputs: 0 = vídeo de fundo (em loop), 1 = áudio da
+  // narração, 2 = overlay de texto transparente, 3/4/5 = mascote.
+  const overlayInputIdx = 2;
+  const closedInputIdx = 3;
+  const halfInputIdx = 4;
+  const openInputIdx = 5;
+
+  const filters: ffmpeg.FilterSpecification[] = [
+    // Cobre o quadro 1920x1080 inteiro com o vídeo de banco: escala pelo
+    // lado maior ("increase", não "decrease" como nas imagens) e corta o
+    // excesso no centro — evita barras pretas quando a proporção do vídeo
+    // baixado não é exatamente 16:9.
+    {
+      filter: "scale",
+      options: { w: 1920, h: 1080, force_original_aspect_ratio: "increase" },
+      inputs: "0:v",
+      outputs: "bg0",
+    },
+    {
+      filter: "crop",
+      options: { w: 1920, h: 1080, x: "(iw-1920)/2", y: "(ih-1080)/2" },
+      inputs: "bg0",
+      outputs: "bg",
+    },
+    // Overlay de texto (cabeçalho/legenda/progresso), já 1920x1080 e
+    // transparente onde não há elemento de UI.
+    {
+      filter: "overlay",
+      options: { x: 0, y: 0 },
+      inputs: ["bg", `${overlayInputIdx}:v`],
+      outputs: "ovtext",
+    },
+    // Os 3 frames do mascote no tamanho final da bolha.
+    {
+      filter: "scale",
+      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
+      inputs: `${closedInputIdx}:v`,
+      outputs: "closed",
+    },
+    {
+      filter: "scale",
+      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
+      inputs: `${halfInputIdx}:v`,
+      outputs: "half",
+    },
+    {
+      filter: "scale",
+      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
+      inputs: `${openInputIdx}:v`,
+      outputs: "open",
+    },
+    {
+      filter: "overlay",
+      options: { x: mascotX, y: mascotY, enable: closedEnableExpr },
+      inputs: ["ovtext", "closed"],
+      outputs: "ov0",
+    },
+    {
+      filter: "overlay",
+      options: { x: mascotX, y: mascotY, enable: halfEnableExpr },
+      inputs: ["ov0", "half"],
+      outputs: "ov1",
+    },
+    {
+      filter: "overlay",
+      options: { x: mascotX, y: mascotY, enable: openEnableExpr },
+      inputs: ["ov1", "open"],
+      outputs: "vout",
+    },
+  ];
+
+  const command = ffmpeg()
+    .input(scene.videoPath)
+    .inputOptions(["-stream_loop -1"])
+    .input(scene.audioPath)
+    .input(scene.overlayImagePath)
+    .inputOptions(["-loop 1"])
+    .input(closedPath)
+    .inputOptions(["-loop 1"])
+    .input(halfPath)
     .inputOptions(["-loop 1"])
     .input(openPath)
     .inputOptions(["-loop 1"]);

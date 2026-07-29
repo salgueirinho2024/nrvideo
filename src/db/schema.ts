@@ -63,6 +63,21 @@ export const scenes = pgTable("scenes", {
   // diagonal + zoom mais forte) só nessas cenas, dando destaque visual sem
   // depender de nenhum gerador de vídeo por IA (ver src/lib/render.ts).
   highlight: boolean("highlight").notNull().default(false),
+  // true para até 3 cenas do roteiro (ver src/lib/gemini.ts) que devem usar
+  // um clipe de vídeo real de banco de imagens (Pexels) como fundo, em vez
+  // da ilustração cartoon estática. Ver src/lib/stock-video.ts.
+  useStockVideo: boolean("use_stock_video").notNull().default(false),
+  // Palavras-chave (em inglês) usadas para buscar o vídeo de banco, quando
+  // useStockVideo = true.
+  videoSearchQuery: text("video_search_query"),
+  // URL do clipe de vídeo de banco baixado para esta cena (Vercel Blob).
+  // Fica null se a cena não usa vídeo de banco, ou se a busca falhou (nesse
+  // caso a cena cai de volta pra ilustração estática — ver videoError).
+  sceneVideoUrl: text("scene_video_url"),
+  // Guarda o motivo da falha quando a busca/download do vídeo de banco não
+  // deu certo (ex: sem PEXELS_API_KEY, sem resultado para a query). Fica
+  // null quando não houve erro. Ver src/lib/stock-video.ts.
+  videoError: text("video_error"),
   audioUrl: text("audio_url"),
   audioDurationSeconds: integer("audio_duration_seconds"),
   slideImageUrl: text("slide_image_url"),
