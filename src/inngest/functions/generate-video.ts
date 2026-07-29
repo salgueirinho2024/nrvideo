@@ -66,6 +66,7 @@ export const generateVideoFunction = inngest.createFunction(
             narrationText: s.narrationText,
             screenText: s.screenText,
             imagePrompt: s.imagePrompt,
+            highlight: s.highlight,
           }))
         )
         .returning({ id: scenes.id, order: scenes.order });
@@ -89,7 +90,7 @@ export const generateVideoFunction = inngest.createFunction(
     });
 
     // 2. Para cada cena: gerar áudio (TTS) + slide, e enviar para o Blob
-    const sceneAssets: { audioUrl: string; slideUrl: string }[] = [];
+    const sceneAssets: { audioUrl: string; slideUrl: string; highlight: boolean }[] = [];
     for (let i = 0; i < script.sceneIds.length; i++) {
       const sceneId = script.sceneIds[i];
       const assets = await step.run(`generate-assets-scene-${i}`, async () => {
@@ -155,7 +156,7 @@ export const generateVideoFunction = inngest.createFunction(
           })
           .where(eq(scenes.id, sceneId));
 
-        return { audioUrl, slideUrl };
+        return { audioUrl, slideUrl, highlight: scene.highlight };
       });
       sceneAssets.push(assets);
     }
@@ -180,7 +181,10 @@ export const generateVideoFunction = inngest.createFunction(
         const imagePath = await downloadToTemp(asset.slideUrl, "png");
         const audioPath = await downloadToTemp(asset.audioUrl, "mp3");
 
-        const clipPath = await renderSceneClip({ imagePath, audioPath }, i);
+        const clipPath = await renderSceneClip(
+          { imagePath, audioPath, highlight: asset.highlight },
+          i
+        );
         const url = await uploadFile(
           clipPath,
           `${projectId}/scene-${i}-clip.mp4`,

@@ -35,7 +35,29 @@ const MOUTH_FLAP_SECONDS = 0.16; // ritmo de abre/fecha da boca ENQUANTO está f
 export interface RenderScene {
   imagePath: string;
   audioPath: string;
+  // Cenas marcadas pelo Gemini como as mais importantes do roteiro (ver
+  // src/lib/gemini.ts) recebem um Ken Burns mais dinâmico — pan diagonal +
+  // zoom mais forte — em vez do zoom sutil e centralizado padrão. É a forma
+  // que este projeto usa para dar destaque visual "tipo vídeo animado" a
+  // cenas específicas sem depender de nenhum gerador de vídeo por IA (não
+  // existe hoje um provedor de vídeo gratuito e confiável o suficiente pra
+  // um pipeline automatizado — ver histórico de troca de provedor em
+  // image-gen.ts para o mesmo problema com imagem).
+  highlight?: boolean;
 }
+
+// --- Ken Burns padrão (todas as cenas) ---
+const NORMAL_ZOOM_RATE = 0.0008;
+const NORMAL_MAX_ZOOM = 1.15;
+
+// --- Ken Burns dinâmico (só cenas com highlight = true) ---
+const HIGHLIGHT_ZOOM_RATE = 0.0016;
+const HIGHLIGHT_MAX_ZOOM = 1.32;
+// Fração do caminho até a borda do quadro que o pan diagonal percorre no
+// auge do movimento (1 = encosta na borda; menos que isso evita um corte
+// bruto de conteúdo perto das bordas da ilustração).
+const HIGHLIGHT_PAN_FRACTION = 0.55;
+const RENDER_FPS = 30;
 
 /**
  * Descobre a duração (em segundos) de um arquivo de áudio usando ffprobe.
@@ -144,11 +166,40 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     `[bg][closed]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${closedEnable}\\,0)'[ov0];` +
     `[ov0][open]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${openEnable}\\,0)'[vout];`;
 
+  // Base do fundo: normaliza para 1920x1080 e faz upscale 2x (headroom de
+  // nitidez pro zoompan cortar sem pixelizar). Comum às duas variantes.
+  const bgBase =
+    `[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,scale=2880:1620,`;
+
+  let bgZoompan: string;
+  if (scene.highlight) {
+    // Cena de destaque: zoom mais forte + pan diagonal. A direção alterna
+    // conforme o índice da cena (par = canto inferior-direito, ímpar =
+    // canto superior-esquerdo) pra não repetir sempre o mesmo movimento
+    // quando há várias cenas de destaque seguidas. `shift` cresce de 0 a 1
+    // ao longo da duração real da cena (frame `on` / total de frames),
+    // então o pan termina de percorrer o trajeto exatamente quando a
+    // narração acaba, não antes nem depois.
+    const totalFrames = Math.max(1, Math.round(duration * RENDER_FPS));
+    const panDirection = index % 2 === 0 ? 1 : -1;
+    const shift = `min(on/${totalFrames},1)`;
+    const zoomExpr = `min(zoom+${HIGHLIGHT_ZOOM_RATE},${HIGHLIGHT_MAX_ZOOM})`;
+    // (iw/2-(iw/zoom/2)) é o deslocamento que centraliza o corte; multiplicar
+    // por (1 + direção*fração*shift) desloca esse ponto central em direção a
+    // uma das bordas conforme o vídeo avança, criando o pan.
+    const xExpr = `(iw/2-(iw/zoom/2))*(1+(${panDirection})*${HIGHLIGHT_PAN_FRACTION}*${shift})`;
+    const yExpr = `(ih/2-(ih/zoom/2))*(1+(${panDirection})*${HIGHLIGHT_PAN_FRACTION}*${shift})`;
+    bgZoompan = `zoompan=z='${zoomExpr}':d=1:x='${xExpr}':y='${yExpr}':s=1920x1080:fps=${RENDER_FPS}[bg];`;
+  } else {
+    // Cena normal: zoom lento e contínuo, centralizado (comportamento original).
+    bgZoompan =
+      `zoompan=z='min(zoom+${NORMAL_ZOOM_RATE},${NORMAL_MAX_ZOOM})':d=1:` +
+      `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${RENDER_FPS}[bg];`;
+  }
+
   const filterComplex =
-    // Fundo: normaliza para 1920x1080, faz upscale (headroom de nitidez) e
-    // aplica um zoom lento e contínuo (Ken Burns) até 1.15x, centralizado.
-    `[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,scale=2880:1620,` +
-    `zoompan=z='min(zoom+0.0008,1.15)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30[bg];` +
+    bgBase +
+    bgZoompan +
     // Redimensiona os 2 frames do mascote (fechado e aberto) pro tamanho final da bolha.
     scaleFilters +
     // Sobrepõe boca fechada e depois boca aberta (habilitada só durante os

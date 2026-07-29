@@ -98,6 +98,10 @@ interface Scene {
   screenText: string;
   assetsReady: boolean;
   imageError: string | null;
+  // true para as cenas que o Gemini escolheu como as mais importantes do
+  // roteiro — recebem um Ken Burns mais dinâmico no vídeo final (ver
+  // src/lib/render.ts).
+  highlight: boolean;
 }
 
 interface Project {
@@ -301,6 +305,22 @@ export default function ProjectPage() {
                   ) : (
                     <span style={{ marginLeft: 8, display: "inline-flex" }}>
                       <Spinner />
+                    </span>
+                  )}
+                  {s.highlight && (
+                    <span
+                      title="Cena de destaque: recebe um movimento de câmera mais dinâmico no vídeo final"
+                      style={{
+                        marginLeft: 8,
+                        fontSize: 11,
+                        color: "#0b1220",
+                        background: "#f5b301",
+                        borderRadius: 999,
+                        padding: "1px 8px",
+                        fontWeight: 600,
+                      }}
+                    >
+                      ★ destaque
                     </span>
                   )}
                 </div>

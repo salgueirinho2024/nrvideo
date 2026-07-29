@@ -58,6 +58,11 @@ export const scenes = pgTable("scenes", {
   // gerada (ex: API key ausente, quota, bloqueio de safety). Fica null
   // quando a imagem foi gerada com sucesso. Ver src/lib/image-gen.ts.
   imageError: text("image_error"),
+  // Marca cenas que o Gemini considerou as mais importantes do roteiro.
+  // Usada em render.ts para aplicar um Ken Burns mais dinâmico (pan
+  // diagonal + zoom mais forte) só nessas cenas, dando destaque visual sem
+  // depender de nenhum gerador de vídeo por IA (ver src/lib/render.ts).
+  highlight: boolean("highlight").notNull().default(false),
   audioUrl: text("audio_url"),
   audioDurationSeconds: integer("audio_duration_seconds"),
   slideImageUrl: text("slide_image_url"),

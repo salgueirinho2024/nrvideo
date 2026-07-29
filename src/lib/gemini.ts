@@ -10,6 +10,9 @@ export interface GeneratedScene {
   // Gemini a partir do conteúdo da cena — não depende de um vocabulário fixo,
   // então funciona para qualquer assunto/tema, não só EPIs específicos.
   imagePrompt: string;
+  // true para as cenas mais importantes do roteiro (ver buildSystemPrompt).
+  // Usada em render.ts para dar um Ken Burns mais dinâmico só nessas cenas.
+  highlight: boolean;
 }
 
 export interface GeneratedScript {
@@ -48,12 +51,13 @@ Regras:
 - "screenText" é um texto curto (título ou 1 frase) que aparece escrito na tela durante a cena — deve resumir a ideia central da cena, não repetir a narração palavra por palavra.
 - A duração alvo do vídeo final é de aproximadamente ${clampedMinutes} minuto(s). Como cada cena dura ~15-25s de áudio, isso equivale a cerca de ${estimatedScenes} cenas — gere um número de cenas próximo desse alvo (nunca menos que ${MIN_SCENES}, nunca mais que ${MAX_SCENES}). Para vídeos mais longos, aprofunde: divida os pontos principais da norma em mais cenas, com exemplos e situações práticas, além de cobrir introdução ao tema, riscos envolvidos, medidas de prevenção/EPIs quando aplicável, e uma cena de encerramento/reforço.
 - "imagePrompt": uma descrição visual, EM INGLÊS, do que a ilustração da cena deve mostrar — será usada por um gerador de imagens de IA. Descreva uma cena concreta e específica ao conteúdo daquela fala (pessoas, ações, ambiente, objetos/EPIs relevantes), não um resumo genérico. Sempre termine a descrição com o sufixo de estilo: "flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image". Mantenha entre 1 e 3 frases.
+- "highlight": true ou false. Marque true em cerca de 1 a cada 3-4 cenas — as que representam o ponto mais importante ou de maior impacto do treinamento (ex: um risco grave, uma consequência de não usar o EPI, um procedimento crítico), não necessariamente a introdução ou o encerramento. Essas cenas recebem um efeito de câmera mais dinâmico no vídeo final. Nunca marque todas nem nenhuma cena como true.
 - Responda APENAS com um JSON válido, sem markdown, sem comentários, no formato exato:
 
 {
   "title": "Título curto do treinamento",
   "scenes": [
-    { "order": 1, "narrationText": "...", "screenText": "...", "imagePrompt": "A construction worker putting on a yellow safety helmet before entering a busy building site, flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image" }
+    { "order": 1, "narrationText": "...", "screenText": "...", "imagePrompt": "A construction worker putting on a yellow safety helmet before entering a busy building site, flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image", "highlight": false }
   ]
 }`;
 }
@@ -127,6 +131,7 @@ export async function generateScript(
         typeof s.imagePrompt === "string" && s.imagePrompt.trim().length > 0
           ? s.imagePrompt.trim()
           : `Illustration representing: ${s.screenText}. flat vector cartoon illustration, bold clean outlines, simple shapes, bright and friendly color palette, corporate training illustration style, no text or letters in the image`,
+      highlight: Boolean(s.highlight),
     })),
     raw: data,
   };
