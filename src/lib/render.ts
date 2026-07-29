@@ -32,6 +32,12 @@ const SILENCE_NOISE_THRESHOLD_DB = -30; // abaixo disso é considerado silêncio
 const SILENCE_MIN_DURATION = 0.15; // pausas menores que isso são ignoradas (evita "piscar" a boca em micro-pausas)
 const MOUTH_FLAP_SECONDS = 0.16; // ritmo de abre/fecha da boca ENQUANTO está falando
 
+// A cada quantos segundos (enquanto está falando) trocamos QUAL expressão de
+// boca aberta aparece (ver getMascotFrames em mascot.tsx — várias fotos com
+// expressões diferentes). Isso evita repetir sempre a mesma boca aberta e dá
+// mais vida ao mascote.
+const OPEN_FRAME_SWITCH_SECONDS = 2.4;
+
 export interface RenderScene {
   imagePath: string;
   audioPath: string;
@@ -112,7 +118,7 @@ function buildIsSpeakingExpr(silences: SilenceInterval[]): string {
  */
 export async function renderSceneClip(scene: RenderScene, index: number): Promise<string> {
   const outPath = path.join(os.tmpdir(), `scene-${index}-${nanoid(6)}.mp4`);
-  const { closedPath, openPath } = await getMascotFrames();
+  const { closedPath, openPaths } = await getMascotFrames();
 
   const duration = await getAudioDuration(scene.audioPath);
   const silences = await detectSilenceIntervals(scene.audioPath, duration);
@@ -122,34 +128,69 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   // MOUTH_FLAP_SECONDS). Fora dos trechos de fala, isSpeaking = 0 anula essa
   // parte e o resultado fica sempre "fechado".
   const flapToggle = `mod(floor(t/${MOUTH_FLAP_SECONDS})\\,2)`;
-  const openEnable = `(${isSpeaking})*eq(${flapToggle}\\,1)`;
-  const closedEnable = `1-(${openEnable})`;
+  const anyOpenEnable = `(${isSpeaking})*eq(${flapToggle}\\,1)`;
+  const closedEnable = `1-(${anyOpenEnable})`;
+
+  // Enquanto a boca está "aberta", alterna qual EXPRESSÃO aparece (várias
+  // fotos diferentes, ver mascot.tsx) a cada OPEN_FRAME_SWITCH_SECONDS, pra
+  // não repetir sempre a mesma boca aberta.
+  const openFrameIndexExpr = `mod(floor(t/${OPEN_FRAME_SWITCH_SECONDS})\\,${openPaths.length})`;
+  const openEnables = openPaths.map(
+    (_, i) => `(${anyOpenEnable})*eq(${openFrameIndexExpr}\\,${i})`
+  );
 
   const mascotX = `W-w-${MASCOT_MARGIN}`;
   const mascotY = `${MASCOT_MARGIN}`; // canto SUPERIOR direito
+
+  // Índices dos inputs do ffmpeg: 0 = imagem da cena, 1 = áudio,
+  // 2 = boca fechada, 3..3+N-1 = expressões de boca aberta.
+  const closedInputIdx = 2;
+  const openInputIdxs = openPaths.map((_, i) => 3 + i);
+
+  const scaleFilters =
+    `[${closedInputIdx}:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[closed];` +
+    openInputIdxs
+      .map(
+        (idx, i) =>
+          `[${idx}:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[open${i}];`
+      )
+      .join("");
+
+  const overlayFilters =
+    `[bg][closed]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${closedEnable}\\,0)'[ov0];` +
+    openEnables
+      .map((enable, i) => {
+        const src = `[ov${i}]`;
+        const dst = i === openEnables.length - 1 ? "[vout]" : `[ov${i + 1}]`;
+        return `${src}[open${i}]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${enable}\\,0)'${dst};`;
+      })
+      .join("");
 
   const filterComplex =
     // Fundo: normaliza para 1920x1080, faz upscale (headroom de nitidez) e
     // aplica um zoom lento e contínuo (Ken Burns) até 1.15x, centralizado.
     `[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,scale=2880:1620,` +
     `zoompan=z='min(zoom+0.0008,1.15)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30[bg];` +
-    // Redimensiona os dois frames do mascote pro tamanho final da bolha.
-    `[2:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[closed];` +
-    `[3:v]scale=${MASCOT_DISPLAY_SIZE}:${MASCOT_DISPLAY_SIZE}[open];` +
-    // Sobrepõe boca fechada ou boca aberta no canto superior direito —
-    // "aberta" só fica habilitada durante trechos com voz detectada.
-    `[bg][closed]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${closedEnable}\\,0)'[tmp];` +
-    `[tmp][open]overlay=x=${mascotX}:y=${mascotY}:enable='gt(${openEnable}\\,0)'[vout]`;
+    // Redimensiona todos os frames do mascote (fechado + expressões abertas) pro tamanho final da bolha.
+    scaleFilters +
+    // Sobrepõe boca fechada, e depois cada expressão de boca aberta (cada
+    // uma só habilitada durante o trecho de fala que "sorteou" ela) no canto
+    // superior direito.
+    overlayFilters;
+
+  const command = ffmpeg()
+    .input(scene.imagePath)
+    .inputOptions(["-loop 1"])
+    .input(scene.audioPath)
+    .input(closedPath)
+    .inputOptions(["-loop 1"]);
+
+  for (const openPath of openPaths) {
+    command.input(openPath).inputOptions(["-loop 1"]);
+  }
 
   return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(scene.imagePath)
-      .inputOptions(["-loop 1"])
-      .input(scene.audioPath)
-      .input(closedPath)
-      .inputOptions(["-loop 1"])
-      .input(openPath)
-      .inputOptions(["-loop 1"])
+    command
       .complexFilter(filterComplex)
       .outputOptions([
         "-map [vout]",
