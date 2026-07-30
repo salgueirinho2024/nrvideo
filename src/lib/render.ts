@@ -6,6 +6,8 @@ import os from "os";
 import { promises as fs } from "fs";
 import { nanoid } from "nanoid";
 import { getMascotFrames } from "./mascot";
+import type { MouthCue, MouthState } from "./lipsync/types";
+import { HeadMotionController } from "./lipsync/head-motion-controller";
 
 if (ffmpegPath) {
   ffmpeg.setFfmpegPath(ffmpegPath as unknown as string);
@@ -21,24 +23,102 @@ if (ffprobePath) {
 const MASCOT_DISPLAY_SIZE = 340;
 const MASCOT_MARGIN = 36;
 
-// --- Detecção de fala/silêncio (sincronia da boca com o áudio real) ---
-// Em vez de alternar os frames boca-aberta/boca-fechada num ritmo artificial
-// e constante, detectamos de verdade os trechos com voz e os trechos de
-// silêncio no áudio da narração (via o filtro `silencedetect` do próprio
-// FFmpeg — sem nenhuma API externa). A boca só "mexe" (alterna entre os
-// frames num ritmo curto) durante os trechos com voz; nos trechos de
-// silêncio, fica sempre no frame de boca fechada.
-const SILENCE_NOISE_THRESHOLD_DB = -30; // abaixo disso é considerado silêncio
-const SILENCE_MIN_DURATION = 0.15; // pausas menores que isso são ignoradas (evita "piscar" a boca em micro-pausas)
-// Duração de CADA passo do ciclo fechado → meio → aberto → meio → (repete).
-// 4 passos por ciclo, então um ciclo completo dura 4x isso (~0.32s => ~3.1
-// "batidas" de boca por segundo, ritmo natural de fala). Trocamos de um
-// corte seco fechado/aberto (2 frames) para esse ciclo de 4 passos com um
-// frame intermediário (mouth-half.png) especificamente para suavizar a
-// transição — era o corte abrupto, mais que a velocidade em si, que dava a
-// sensação de "pulando" relatada. Ver mascot.tsx para o porquê da troca do
-// frame de boca aberta em si (também corrigia o "bico").
+// --- Lip sync por fonemas reais (ver src/lib/lipsync/) ---
+// Substituiu a abordagem anterior de `silencedetect` + ciclo artificial de
+// 4 passos. Agora cada cena chega aqui com `mouthCues`: uma timeline real
+// de "closed"/"half"/"open" derivada de fonemas (Rhubarb Lip Sync, com
+// fallback heurístico — ver src/lib/lipsync/phoneme-service.ts), calculada
+// no step "generate-lipsync-scene-N" do Inngest. O render.ts não faz mais
+// NENHUMA análise de áudio — só desenha a timeline que já chegou pronta.
+// Limite de segurança: timelines absurdamente longas (ex.: fallback
+// heurístico em narrações muito longas, antes de mesclar) inflam demais a
+// expressão do filtro FFmpeg. Acima disso, simplificamos para boca sempre
+// "closed" nessa cena — degrada bem, não quebra o render.
+const MAX_MOUTH_CUES_IN_FILTER = 500;
+
+const headMotion = new HeadMotionController();
+
+// --- Detecção de fala/silêncio (só para cenas com VÍDEO de banco) ---
+// renderSceneClip (cenas com ilustração estática) já usa mouthCues reais
+// (fonemas via Rhubarb/heurística — ver src/lib/lipsync/). renderSceneClipVideo
+// (cenas com vídeo de banco como fundo) ainda não foi migrado nesta fase —
+// continua com a abordagem anterior de `silencedetect` + ciclo de 4 passos,
+// que já era funcional e não bloqueia a melhoria de lip sync nas cenas de
+// imagem (a maioria do vídeo). Migrar isso também é um próximo passo natural.
+const SILENCE_NOISE_THRESHOLD_DB = -30;
+const SILENCE_MIN_DURATION = 0.15;
 const MOUTH_STEP_SECONDS = 0.08;
+
+interface SilenceInterval {
+  start: number;
+  end: number;
+}
+
+function detectSilenceIntervals(audioPath: string, duration: number): Promise<SilenceInterval[]> {
+  return new Promise((resolve) => {
+    let log = "";
+    ffmpeg(audioPath)
+      .audioFilters(`silencedetect=noise=${SILENCE_NOISE_THRESHOLD_DB}dB:d=${SILENCE_MIN_DURATION}`)
+      .outputOptions(["-f null"])
+      .output(process.platform === "win32" ? "NUL" : "/dev/null")
+      .on("stderr", (line: string) => {
+        log += line + "\n";
+      })
+      .on("end", () => resolve(parseSilenceLog(log, duration)))
+      .on("error", () => resolve([]))
+      .run();
+  });
+}
+
+function parseSilenceLog(log: string, duration: number): SilenceInterval[] {
+  const starts = [...log.matchAll(/silence_start:\s*([\d.]+)/g)].map((m) => parseFloat(m[1]));
+  const ends = [...log.matchAll(/silence_end:\s*([\d.]+)/g)].map((m) => parseFloat(m[1]));
+  return starts.map((start, i) => ({
+    start,
+    end: ends[i] !== undefined ? ends[i] : duration,
+  }));
+}
+
+function buildIsSpeakingExpr(silences: SilenceInterval[]): string {
+  if (silences.length === 0) return "1";
+  return silences
+    .map((s) => `(1-between(t,${s.start.toFixed(3)},${s.end.toFixed(3)}))`)
+    .join("*");
+}
+
+/**
+ * Monta, para cada um dos 3 estados de boca, a expressão de filtro FFmpeg
+ * "está nesse estado no instante t": soma de `between(t, início, fim)` por
+ * cue daquele estado. Valor > 0 -> `gt(...)` vira o `enable` do overlay.
+ */
+function buildMouthEnableExpressions(cues: MouthCue[]): {
+  closedEnableExpr: string;
+  halfEnableExpr: string;
+  openEnableExpr: string;
+} {
+  const safeCues = cues.length <= MAX_MOUTH_CUES_IN_FILTER ? cues : [];
+
+  const sumFor = (state: MouthState): string => {
+    const matching = safeCues.filter((c) => c.state === state);
+    if (matching.length === 0) return "0";
+    return matching
+      .map((c) => `between(t,${c.start.toFixed(3)},${c.end.toFixed(3)})`)
+      .join("+");
+  };
+
+  const halfSum = sumFor("half");
+  const openSum = sumFor("open");
+  const closedSum = sumFor("closed");
+
+  return {
+    // "closed" também é o padrão de repouso: fica ativo se explicitamente
+    // marcado OU se nenhum dos 3 estados cobre o instante t (ex.: cue
+    // ausente por causa do limite de segurança acima).
+    closedEnableExpr: `gt(${closedSum},0)+eq(${closedSum}+${halfSum}+${openSum},0)`,
+    halfEnableExpr: `gt(${halfSum},0)`,
+    openEnableExpr: `gt(${openSum},0)`,
+  };
+}
 
 /**
  * Confere que uma expressão de filtro do FFmpeg está com os parênteses
@@ -83,6 +163,10 @@ function assertBalancedExpr(name: string, expr: string): void {
 export interface RenderScene {
   imagePath: string;
   audioPath: string;
+  /** Timeline real de boca (closed/half/open), derivada de fonemas —
+   *  calculada no step "generate-lipsync-scene-N" do Inngest. Ver
+   *  src/lib/lipsync/lipsync-service.ts. */
+  mouthCues: MouthCue[];
   // Cenas marcadas pelo Gemini como as mais importantes do roteiro (ver
   // src/lib/gemini.ts) recebem um Ken Burns mais dinâmico — pan diagonal +
   // zoom mais forte — em vez do zoom sutil e centralizado padrão. É a forma
@@ -119,59 +203,6 @@ export function getAudioDuration(audioPath: string): Promise<number> {
   });
 }
 
-interface SilenceInterval {
-  start: number;
-  end: number;
-}
-
-/**
- * Roda o áudio da cena pelo filtro `silencedetect` do FFmpeg (sem gerar
- * nenhum arquivo de saída — só analisa) e extrai os trechos de silêncio do
- * log (stderr). Se a análise falhar por qualquer motivo, retorna lista
- * vazia (mais seguro do que travar o pipeline inteiro: nesse caso a boca
- * simplesmente fica sempre fechada nessa cena, em vez de quebrar o vídeo).
- */
-function detectSilenceIntervals(audioPath: string, duration: number): Promise<SilenceInterval[]> {
-  return new Promise((resolve) => {
-    let log = "";
-    ffmpeg(audioPath)
-      .audioFilters(`silencedetect=noise=${SILENCE_NOISE_THRESHOLD_DB}dB:d=${SILENCE_MIN_DURATION}`)
-      .outputOptions(["-f null"])
-      .output(process.platform === "win32" ? "NUL" : "/dev/null")
-      .on("stderr", (line: string) => {
-        log += line + "\n";
-      })
-      .on("end", () => resolve(parseSilenceLog(log, duration)))
-      .on("error", () => resolve([]))
-      .run();
-  });
-}
-
-function parseSilenceLog(log: string, duration: number): SilenceInterval[] {
-  const starts = [...log.matchAll(/silence_start:\s*([\d.]+)/g)].map((m) => parseFloat(m[1]));
-  const ends = [...log.matchAll(/silence_end:\s*([\d.]+)/g)].map((m) => parseFloat(m[1]));
-  return starts.map((start, i) => ({
-    start,
-    // Se o áudio termina durante um silêncio, o FFmpeg não chega a logar o
-    // "silence_end" correspondente — nesse caso, o silêncio vai até o fim.
-    end: ends[i] !== undefined ? ends[i] : duration,
-  }));
-}
-
-/**
- * Monta a expressão de filtro do FFmpeg que representa "não está em
- * silêncio neste instante t": para cada intervalo de silêncio, multiplica
- * por (1 - between(t, início, fim)) — o produto só é 1 quando t não cai em
- * NENHUM dos intervalos. Retorna "1" (sempre falando) se não houver
- * silêncio detectado.
- */
-function buildIsSpeakingExpr(silences: SilenceInterval[]): string {
-  if (silences.length === 0) return "1";
-  return silences
-    .map((s) => `(1-between(t,${s.start.toFixed(3)},${s.end.toFixed(3)}))`)
-    .join("*");
-}
-
 /**
  * Gera um clipe de vídeo (mp4) para UMA cena: imagem estática + áudio da narração.
  * Exportada (além de usada por renderFinalVideo) para permitir que cada
@@ -185,20 +216,10 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   const { closedPath, halfPath, openPath } = await getMascotFrames();
 
   const duration = await getAudioDuration(scene.audioPath);
-  const silences = await detectSilenceIntervals(scene.audioPath, duration);
-  const isSpeaking = buildIsSpeakingExpr(silences);
-
-  // Ciclo de 4 passos ENQUANTO está falando: fechado(0) -> meio(1) ->
-  // aberto(2) -> meio(3) -> fechado(0)... Fora dos trechos de fala,
-  // isSpeaking = 0 zera os frames de meio/aberto e o resultado fica sempre
-  // "fechado". Usar um frame intermediário (mouth-half.png) em vez de pular
-  // direto de fechado pra aberto é o que suaviza a transição e tira a
-  // sensação de "pulando" -- o corte seco entre 2 estados, não a velocidade
-  // em si, era o problema.
-  const phase = `mod(floor(t/${MOUTH_STEP_SECONDS}),4)`;
-  const openEnable = `(${isSpeaking})*eq(${phase},2)`;
-  const halfEnable = `(${isSpeaking})*(eq(${phase},1)+eq(${phase},3))`;
-  const closedEnable = `1-(${openEnable})-(${halfEnable})`;
+  const { closedEnableExpr, halfEnableExpr, openEnableExpr } = buildMouthEnableExpressions(
+    scene.mouthCues
+  );
+  const rotateExpr = headMotion.buildFfmpegRotateExpr();
 
   const mascotX = `W-w-${MASCOT_MARGIN}`;
   const mascotY = `${MASCOT_MARGIN}`; // canto SUPERIOR direito
@@ -232,16 +253,13 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     yExpr = `ih/2-(ih/zoom/2)`;
   }
 
-  const closedEnableExpr = `gt(${closedEnable},0)`;
-  const halfEnableExpr = `gt(${halfEnable},0)`;
-  const openEnableExpr = `gt(${openEnable},0)`;
-
   assertBalancedExpr("zoompan:z", zoomExpr);
   assertBalancedExpr("zoompan:x", xExpr);
   assertBalancedExpr("zoompan:y", yExpr);
   assertBalancedExpr("overlay:enable(closed)", closedEnableExpr);
   assertBalancedExpr("overlay:enable(half)", halfEnableExpr);
   assertBalancedExpr("overlay:enable(open)", openEnableExpr);
+  assertBalancedExpr("rotate:a", rotateExpr);
 
   // Filtros estruturados: o fluent-ffmpeg monta a string do filter_complex
   // (inclusive as aspas em volta dos valores com vírgula) — nada de
@@ -294,24 +312,50 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
       inputs: `${openInputIdx}:v`,
       outputs: "open",
     },
+    // Leve balanço de cabeça (Fase 1 — ver head-motion-controller.ts):
+    // gira os 3 frames do mascote em torno do próprio centro pela mesma
+    // expressão senoidal, sem precisar de PNG novo nem de compositor em
+    // canvas. `c=none` preenche os cantos expostos pela rotação com
+    // transparência (os PNGs do mascote já têm alpha — recorte
+    // circular, ver mascot.tsx), e `ow=iw:oh=ih` mantém o tamanho do
+    // canvas igual ao original (rotação pequena o suficiente pra não
+    // cortar a bolha).
+    {
+      filter: "rotate",
+      options: { a: rotateExpr, c: "none", ow: "iw", oh: "ih" },
+      inputs: "closed",
+      outputs: "closedR",
+    },
+    {
+      filter: "rotate",
+      options: { a: rotateExpr, c: "none", ow: "iw", oh: "ih" },
+      inputs: "half",
+      outputs: "halfR",
+    },
+    {
+      filter: "rotate",
+      options: { a: rotateExpr, c: "none", ow: "iw", oh: "ih" },
+      inputs: "open",
+      outputs: "openR",
+    },
     // Boca fechada e, por cima, meio-aberta e aberta (só durante os trechos
     // de fala) -- o passo intermediário é o que suaviza a transição.
     {
       filter: "overlay",
       options: { x: mascotX, y: mascotY, enable: closedEnableExpr },
-      inputs: ["bg", "closed"],
+      inputs: ["bg", "closedR"],
       outputs: "ov0",
     },
     {
       filter: "overlay",
       options: { x: mascotX, y: mascotY, enable: halfEnableExpr },
-      inputs: ["ov0", "half"],
+      inputs: ["ov0", "halfR"],
       outputs: "ov1",
     },
     {
       filter: "overlay",
       options: { x: mascotX, y: mascotY, enable: openEnableExpr },
-      inputs: ["ov1", "open"],
+      inputs: ["ov1", "openR"],
       outputs: "vout",
     },
   ];

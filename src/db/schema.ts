@@ -81,6 +81,17 @@ export const scenes = pgTable("scenes", {
   audioUrl: text("audio_url"),
   audioDurationSeconds: integer("audio_duration_seconds"),
   slideImageUrl: text("slide_image_url"),
+  // Lip sync por fonemas reais (ver src/lib/lipsync/). "rhubarb" = fonemas
+  // extraídos de verdade do áudio; "heuristic" = fallback determinístico
+  // baseado nas vogais do texto + trechos de fala (quando o binário do
+  // Rhubarb não está disponível no ambiente).
+  lipsyncSource: text("lipsync_source").$type<"rhubarb" | "heuristic">(),
+  // Emoção dominante da cena, detectada por palavra-chave no texto da
+  // narração (ver emotion-detector.ts) — hoje só persistida para
+  // debug/QA; a Fase 2 (camada de sobrancelha) é quem vai consumir isso.
+  detectedEmotion: text("detected_emotion"),
+  // URL do JSON bruto da timeline de visemas no Blob, para depuração.
+  visemeTimelineUrl: text("viseme_timeline_url"),
   assetsReady: boolean("assets_ready").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

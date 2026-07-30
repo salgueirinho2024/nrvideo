@@ -15,7 +15,11 @@ import {
   renderSceneClipVideo,
   concatFinalVideo,
 } from "@/lib/render";
+import { buildSceneLipsync } from "@/lib/lipsync/lipsync-service";
+import type { MouthCue } from "@/lib/lipsync/types";
 import { promises as fsPromises } from "fs";
+import os from "os";
+import path from "path";
 
 export const generateVideoFunction = inngest.createFunction(
   {
@@ -106,6 +110,10 @@ export const generateVideoFunction = inngest.createFunction(
       highlight: boolean;
       mediaType: "image" | "video";
       sceneVideoUrl: string | null;
+      // Timeline real de boca (fonemas via Rhubarb/heurística), calculada
+      // uma vez por cena em generate-assets-scene-N e reaproveitada em
+      // render-clip-scene-N — ver src/lib/lipsync/.
+      mouthCues: MouthCue[];
     }[] = [];
     for (let i = 0; i < script.sceneIds.length; i++) {
       const sceneId = script.sceneIds[i];
@@ -121,6 +129,37 @@ export const generateVideoFunction = inngest.createFunction(
           script.voice
         );
         const duration = await getAudioDuration(audioPath);
+
+        // --- Lip sync por fonemas reais (ver src/lib/lipsync/) ---
+        // Precisa rodar AQUI, com o áudio ainda em disco local — depois do
+        // upload pro Blob, esse tmp file é apagado. O resultado (mouthCues
+        // já mapeadas pros 3 estados de boca existentes) viaja junto com os
+        // outros assets da cena até a etapa de render.
+        const lipsyncResult = await buildSceneLipsync({
+          sceneId: scene.id,
+          audioFilePath: audioPath,
+          narrationText: scene.narrationText,
+          durationSeconds: duration,
+        });
+
+        let visemeTimelineUrl: string | null = null;
+        try {
+          const timelinePath = path.join(os.tmpdir(), `${scene.id}-visemes.json`);
+          await fsPromises.writeFile(
+            timelinePath,
+            JSON.stringify(lipsyncResult.rawTimeline, null, 2)
+          );
+          visemeTimelineUrl = await uploadFile(
+            timelinePath,
+            `${projectId}/scene-${scene.order}-visemes.json`,
+            "application/json"
+          );
+          await fsPromises.unlink(timelinePath).catch(() => undefined);
+        } catch (err) {
+          // Puramente para debug/QA — nunca deve derrubar a geração do vídeo.
+          console.error(`Falha ao subir timeline de visemas da cena ${scene.order}:`, err);
+        }
+
         const audioUrl = await uploadFile(
           audioPath,
           `${projectId}/scene-${scene.order}-audio.mp3`,
@@ -178,6 +217,9 @@ export const generateVideoFunction = inngest.createFunction(
               slideImageUrl: overlayUrl,
               videoError: null,
               assetsReady: true,
+              lipsyncSource: lipsyncResult.timelineSource,
+              detectedEmotion: lipsyncResult.emotion,
+              visemeTimelineUrl,
             })
             .where(eq(scenes.id, sceneId));
 
@@ -187,6 +229,7 @@ export const generateVideoFunction = inngest.createFunction(
             highlight: scene.highlight,
             mediaType: "video" as const,
             sceneVideoUrl,
+            mouthCues: lipsyncResult.mouthCues,
           };
         }
 
@@ -232,6 +275,9 @@ export const generateVideoFunction = inngest.createFunction(
             imageError,
             videoError,
             assetsReady: true,
+            lipsyncSource: lipsyncResult.timelineSource,
+            detectedEmotion: lipsyncResult.emotion,
+            visemeTimelineUrl,
           })
           .where(eq(scenes.id, sceneId));
 
@@ -241,6 +287,7 @@ export const generateVideoFunction = inngest.createFunction(
           highlight: scene.highlight,
           mediaType: "image" as const,
           sceneVideoUrl: null,
+          mouthCues: lipsyncResult.mouthCues,
         };
       });
       sceneAssets.push(assets);
@@ -283,7 +330,7 @@ export const generateVideoFunction = inngest.createFunction(
           const imagePath = await downloadToTemp(asset.slideUrl, "png");
 
           clipPath = await renderSceneClip(
-            { imagePath, audioPath, highlight: asset.highlight },
+            { imagePath, audioPath, highlight: asset.highlight, mouthCues: asset.mouthCues },
             i
           );
 
