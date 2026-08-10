@@ -1,23 +1,23 @@
 import type { VisemeShape, VisemeTimeline, MouthCue, MouthState } from "./types";
 
 /**
- * Fase 1: você tem 3 assets de boca hoje (closed/half/open — ver
- * public/mascot/). Em vez de esperar por um rig em camadas com 9 bocas
- * (Fase 2, ver README-LIPSYNC.md), mapeamos os 9 visemas Preston Blair para
- * o estado mais próximo entre os 3 que já existem. Isso já é uma melhoria
- * real: a boca agora abre/fecha no tempo certo dos fonemas de verdade, em
- * vez de um ciclo artificial de 4 passos amarrado a "tem som ou não".
+ * Mapeamento 1:1 — cada um dos 9 visemas Preston Blair que o Rhubarb produz
+ * tem hoje um asset de boca próprio (public/mascot/, gerado por
+ * scripts/generate-mascot-visemes.mjs), então não precisamos mais colapsar
+ * pra um conjunto reduzido de estados (isso era a Fase 1 antiga, com só
+ * 3 bocas — closed/half/open). X e A compartilham o mesmo asset porque são
+ * visualmente idênticos (lábios fechados em repouso).
  */
 const SHAPE_TO_STATE: Record<VisemeShape, MouthState> = {
   X: "closed", // silêncio
   A: "closed", // P, B, M — lábios fechados
-  B: "half", // K, G, N, D, T, S, Z
-  C: "half", // CH, J, SH
-  D: "open", // vogal A — boca bem aberta
-  E: "half", // vogal E — boca semi-aberta
-  F: "half", // F, V — dente no lábio (mais próximo de "half" que "open")
-  G: "open", // vogal U/O arredondada
-  H: "half", // L
+  B: "halfTeeth", // K, G, N, D, T, S, Z
+  C: "chOpen", // CH, J, SH
+  D: "wideOpen", // vogal A — boca bem aberta
+  E: "stretchE", // vogal E — boca semi-aberta, esticada
+  F: "teethLip", // F, V — dente no lábio
+  G: "roundO", // vogal U/O arredondada
+  H: "tongueL", // L
 };
 
 /**

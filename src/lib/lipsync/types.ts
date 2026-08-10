@@ -1,6 +1,7 @@
 // Tipos centrais do sistema de lip sync. Ver README-LIPSYNC.md para a
-// arquitetura completa (Fase 1 = já ligado ao render.ts; Fase 2 = pronto em
-// código, aguardando assets de rig em camadas).
+// arquitetura completa (Fase 1 = já ligado ao render.ts, hoje com granularidade
+// total de 8 bocas — ver MouthState; Fase 2 = pisca-olho, pronto em código,
+// aguardando assets de rig em camadas).
 
 /** Visemas no padrão Preston Blair — é o que o Rhubarb Lip Sync produz.
  *  9 formas cobrem qualquer fonema do português/inglês com fidelidade
@@ -25,11 +26,20 @@ export interface VisemeTimeline {
   source: "rhubarb" | "heuristic";
 }
 
-/** Os 3 estados de boca que existem hoje como asset (public/mascot/).
- *  A Fase 1 mapeia os 9 visemas para esses 3 estados — upgrade real de
- *  qualidade (fonema de verdade, não só "tem som ou não") sem exigir arte
- *  nova. Ver viseme-mapper.ts. */
-export type MouthState = "closed" | "half" | "open";
+/** Os 8 estados de boca que existem como asset (public/mascot/), um pra
+ *  cada visema visualmente distinto do Preston Blair — X e A são o mesmo
+ *  desenho (lábios fechados em repouso), por isso não tem um 9º estado.
+ *  Ver viseme-mapper.ts para o mapeamento shape → asset, e
+ *  scripts/generate-mascot-visemes.mjs para como os PNGs são gerados. */
+export type MouthState =
+  | "closed" // X, A — lábios fechados em repouso (M, B, P, silêncio)
+  | "halfTeeth" // B — boca entreaberta, dentes quase se tocando
+  | "chOpen" // C — boca em "quadrado arredondado", dentes à mostra
+  | "wideOpen" // D — boca bem aberta, queixo caído ("ah")
+  | "stretchE" // E — boca entreaberta, cantos esticados ("eh")
+  | "teethLip" // F — dentes de cima no lábio de baixo ("f"/"v")
+  | "roundO" // G — lábios arredondados/projetados ("oh"/"u")
+  | "tongueL"; // H — boca entreaberta, ponta da língua visível ("l")
 
 export interface MouthCue {
   start: number;
