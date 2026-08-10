@@ -188,7 +188,9 @@ export class PhonemeService {
     dialogText?: string
   ): Promise<VisemeTimeline> {
     const outputJsonPath = audioFilePath.replace(/\.(mp3|wav)$/i, ".rhubarb.json");
-    const args = ["-f", "json", "-o", outputJsonPath, "--exportFormat", "json"];
+    // Recognizer "phonetic" (em vez do padrão "pocketSphinx", que só
+    // reconhece inglês) — necessário porque a narração é em português.
+    const args = ["-f", "json", "-o", outputJsonPath, "--exportFormat", "json", "-r", "phonetic"];
 
     let dialogPath: string | null = null;
     if (dialogText) {
