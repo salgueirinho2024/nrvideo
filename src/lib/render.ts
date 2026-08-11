@@ -38,53 +38,6 @@ const MAX_MOUTH_CUES_IN_FILTER = 500;
 
 const headMotion = new HeadMotionController();
 
-// --- Detecção de fala/silêncio (só para cenas com VÍDEO de banco) ---
-// renderSceneClip (cenas com ilustração estática) já usa mouthCues reais
-// (fonemas via Rhubarb/heurística — ver src/lib/lipsync/). renderSceneClipVideo
-// (cenas com vídeo de banco como fundo) ainda não foi migrado nesta fase —
-// continua com a abordagem anterior de `silencedetect` + ciclo de 4 passos,
-// que já era funcional e não bloqueia a melhoria de lip sync nas cenas de
-// imagem (a maioria do vídeo). Migrar isso também é um próximo passo natural.
-const SILENCE_NOISE_THRESHOLD_DB = -30;
-const SILENCE_MIN_DURATION = 0.15;
-const MOUTH_STEP_SECONDS = 0.08;
-
-interface SilenceInterval {
-  start: number;
-  end: number;
-}
-
-function detectSilenceIntervals(audioPath: string, duration: number): Promise<SilenceInterval[]> {
-  return new Promise((resolve) => {
-    let log = "";
-    ffmpeg(audioPath)
-      .audioFilters(`silencedetect=noise=${SILENCE_NOISE_THRESHOLD_DB}dB:d=${SILENCE_MIN_DURATION}`)
-      .outputOptions(["-f null"])
-      .output(process.platform === "win32" ? "NUL" : "/dev/null")
-      .on("stderr", (line: string) => {
-        log += line + "\n";
-      })
-      .on("end", () => resolve(parseSilenceLog(log, duration)))
-      .on("error", () => resolve([]))
-      .run();
-  });
-}
-
-function parseSilenceLog(log: string, duration: number): SilenceInterval[] {
-  const starts = [...log.matchAll(/silence_start:\s*([\d.]+)/g)].map((m) => parseFloat(m[1]));
-  const ends = [...log.matchAll(/silence_end:\s*([\d.]+)/g)].map((m) => parseFloat(m[1]));
-  return starts.map((start, i) => ({
-    start,
-    end: ends[i] !== undefined ? ends[i] : duration,
-  }));
-}
-
-function buildIsSpeakingExpr(silences: SilenceInterval[]): string {
-  if (silences.length === 0) return "1";
-  return silences
-    .map((s) => `(1-between(t,${s.start.toFixed(3)},${s.end.toFixed(3)}))`)
-    .join("*");
-}
 
 /**
  * Monta, para cada um dos 8 estados de boca (MOUTH_ASSET_KEYS), a
@@ -392,6 +345,16 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
         "-threads 2",
         "-c:a aac",
         "-b:a 192k",
+        // Fixo em todos os clipes (aqui, renderSceneClipVideo e
+        // renderIntroClip) — necessário pro concatFinalVideo funcionar.
+        // O concat final usa "-c copy" (sem re-encode); se cada clipe
+        // herdar o sample rate/canais do seu áudio de origem (TTS sai em
+        // 24kHz mono, o silêncio do intro em 44.1kHz estéreo), o áudio
+        // concatenado fica inconsistente entre os trechos e o player toca
+        // o vídeo inteiro mudo/quebrado, mesmo cada clipe individual
+        // estando correto.
+        "-ar 44100",
+        "-ac 2",
         "-pix_fmt yuv420p",
         "-shortest",
       ])
@@ -411,15 +374,18 @@ export interface RenderVideoScene {
   // slides.tsx. Sobreposto por cima do vídeo de fundo.
   overlayImagePath: string;
   audioPath: string;
+  /** Timeline real de boca (fonemas via Rhubarb/heurística), a mesma usada
+   *  em renderSceneClip — ver src/lib/lipsync/. */
+  mouthCues: MouthCue[];
 }
 
 /**
  * Gera um clipe de vídeo (mp4) para UMA cena que usa um vídeo de banco real
  * como fundo (em vez de imagem estática + Ken Burns) — ver
- * RenderVideoScene. Mesma lógica de mascote falando (fechado/meio/aberto
- * sincronizado com o áudio) que renderSceneClip, só troca a origem do
- * "fundo": aqui é vídeo decodificado quadro a quadro, não uma imagem com
- * zoompan.
+ * RenderVideoScene. Mesma lógica de mascote falando de renderSceneClip
+ * (timeline real de fonemas via scene.mouthCues, só os estados de boca que
+ * a cena realmente usa), só troca a origem do "fundo": aqui é vídeo
+ * decodificado quadro a quadro, não uma imagem com zoompan.
  *
  * Duração final = duração do áudio da narração (`-shortest` no output):
  * - Se o vídeo de banco for mais curto que a narração, `-stream_loop -1`
@@ -431,42 +397,34 @@ export async function renderSceneClipVideo(
   index: number
 ): Promise<string> {
   const outPath = path.join(os.tmpdir(), `scene-video-${index}-${nanoid(6)}.mp4`);
-  // Esta função ainda não foi migrada pra timeline de fonemas reais (ver
-  // comentário em SILENCE_NOISE_THRESHOLD_DB acima) — usa só um ciclo
-  // heurístico de silêncio, então não faz sentido usar as 8 bocas aqui.
-  // Pega 3 representativas do conjunto de 8 (fechada/entreaberta/bem
-  // aberta) como aproximação, igual à Fase 1 antiga.
   const mouthFrames = await getMascotFrames();
-  const closedPath = mouthFrames.closed;
-  const halfPath = mouthFrames.halfTeeth;
-  const openPath = mouthFrames.wideOpen;
 
-  const duration = await getAudioDuration(scene.audioPath);
-  const silences = await detectSilenceIntervals(scene.audioPath, duration);
-  const isSpeaking = buildIsSpeakingExpr(silences);
+  // Estados de boca que a cena realmente usa (ver getUsedMouthStates em
+  // renderSceneClip) — mesma timeline real de fonemas, não mais um ciclo
+  // artificial baseado só em detectar silêncio. Era essa a causa do
+  // lipsync "errado" nas cenas com vídeo de banco: a boca girava num ciclo
+  // fixo de 4 passos (fechada/meio/aberta/meio) só quando havia áudio,
+  // sem relação nenhuma com o fonema sendo falado naquele instante.
+  const usedStates = getUsedMouthStates(scene.mouthCues);
+  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues, usedStates);
+  const rotateExpr = headMotion.buildFfmpegRotateExpr();
 
-  const phase = `mod(floor(t/${MOUTH_STEP_SECONDS}),4)`;
-  const openEnable = `(${isSpeaking})*eq(${phase},2)`;
-  const halfEnable = `(${isSpeaking})*(eq(${phase},1)+eq(${phase},3))`;
-  const closedEnable = `1-(${openEnable})-(${halfEnable})`;
-
-  const closedEnableExpr = `gt(${closedEnable},0)`;
-  const halfEnableExpr = `gt(${halfEnable},0)`;
-  const openEnableExpr = `gt(${openEnable},0)`;
-
-  assertBalancedExpr("overlay:enable(closed)", closedEnableExpr);
-  assertBalancedExpr("overlay:enable(half)", halfEnableExpr);
-  assertBalancedExpr("overlay:enable(open)", openEnableExpr);
+  for (const key of usedStates) {
+    assertBalancedExpr(`overlay:enable(${key})`, mouthEnableExpr[key]);
+  }
+  assertBalancedExpr("rotate:a", rotateExpr);
 
   const mascotX = `W-w-${MASCOT_MARGIN}`;
   const mascotY = `${MASCOT_MARGIN}`;
 
   // Índices dos inputs: 0 = vídeo de fundo (em loop), 1 = áudio da
-  // narração, 2 = overlay de texto transparente, 3/4/5 = mascote.
+  // narração, 2 = overlay de texto transparente, 3..N = estados de boca
+  // usados nessa cena (ver usedStates).
   const overlayInputIdx = 2;
-  const closedInputIdx = 3;
-  const halfInputIdx = 4;
-  const openInputIdx = 5;
+  const MOUTH_INPUT_BASE = 3;
+  const mouthInputIdx = Object.fromEntries(
+    usedStates.map((key, i) => [key, MOUTH_INPUT_BASE + i])
+  ) as Record<MouthState, number>;
 
   const filters: ffmpeg.FilterSpecification[] = [
     // Cobre o quadro 1920x1080 inteiro com o vídeo de banco: escala pelo
@@ -493,57 +451,41 @@ export async function renderSceneClipVideo(
       inputs: ["bg", `${overlayInputIdx}:v`],
       outputs: "ovtext",
     },
-    // Os 3 frames do mascote no tamanho final da bolha.
-    {
+    // Frames de boca do mascote realmente usados nessa cena.
+    ...usedStates.map((key) => ({
       filter: "scale",
       options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
-      inputs: `${closedInputIdx}:v`,
-      outputs: "closed",
-    },
-    {
-      filter: "scale",
-      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
-      inputs: `${halfInputIdx}:v`,
-      outputs: "half",
-    },
-    {
-      filter: "scale",
-      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
-      inputs: `${openInputIdx}:v`,
-      outputs: "open",
-    },
-    {
-      filter: "overlay",
-      options: { x: mascotX, y: mascotY, enable: closedEnableExpr },
-      inputs: ["ovtext", "closed"],
-      outputs: "ov0",
-    },
-    {
-      filter: "overlay",
-      options: { x: mascotX, y: mascotY, enable: halfEnableExpr },
-      inputs: ["ov0", "half"],
-      outputs: "ov1",
-    },
-    {
-      filter: "overlay",
-      options: { x: mascotX, y: mascotY, enable: openEnableExpr },
-      inputs: ["ov1", "open"],
-      outputs: "vout",
-    },
+      inputs: `${mouthInputIdx[key]}:v`,
+      outputs: key,
+    })),
+    // Mesmo leve balanço de cabeça de renderSceneClip.
+    ...usedStates.map((key) => ({
+      filter: "rotate",
+      options: { a: rotateExpr, c: "none", ow: "iw", oh: "ih" },
+      inputs: key,
+      outputs: `${key}R`,
+    })),
+    ...usedStates.map((key, i) => {
+      const prevOut = i === 0 ? "ovtext" : "ov" + (i - 1);
+      const outName = i === usedStates.length - 1 ? "vout" : "ov" + i;
+      return {
+        filter: "overlay",
+        options: { x: mascotX, y: mascotY, enable: mouthEnableExpr[key] },
+        inputs: [prevOut, `${key}R`],
+        outputs: outName,
+      };
+    }),
   ];
 
-  const command = ffmpeg()
+  let command = ffmpeg()
     .input(scene.videoPath)
     .inputOptions(["-stream_loop -1"])
     .input(scene.audioPath)
     .input(scene.overlayImagePath)
-    .inputOptions(["-loop 1"])
-    .input(closedPath)
-    .inputOptions(["-loop 1"])
-    .input(halfPath)
-    .inputOptions(["-loop 1"])
-    .input(openPath)
     .inputOptions(["-loop 1"]);
+  for (const key of usedStates) {
+    command = command.input(mouthFrames[key]).inputOptions(["-loop 1"]);
+  }
 
   return new Promise((resolve, reject) => {
     command
@@ -561,6 +503,11 @@ export async function renderSceneClipVideo(
         "-threads 2",
         "-c:a aac",
         "-b:a 192k",
+        // Mesmo motivo do renderSceneClip: fixar sample rate/canais pro
+        // concat final ("-c copy") não misturar parâmetros de áudio
+        // diferentes entre clipes.
+        "-ar 44100",
+        "-ac 2",
         "-pix_fmt yuv420p",
         "-shortest",
       ])

@@ -349,7 +349,7 @@ export const generateVideoFunction = inngest.createFunction(
           const overlayImagePath = await downloadToTemp(asset.slideUrl, "png");
 
           clipPath = await renderSceneClipVideo(
-            { videoPath, overlayImagePath, audioPath },
+            { videoPath, overlayImagePath, audioPath, mouthCues: asset.mouthCues },
             i
           );
 
