@@ -1,0 +1,79 @@
+--- a/src/lib/download.ts
++++ b/src/lib/download.ts
+@@ -1,6 +1,8 @@
+ import path from "path";
+ import os from "os";
+-import { promises as fs } from "fs";
++import fs from "fs";
++import { pipeline } from "stream/promises";
++import { Readable } from "stream";
+ import { nanoid } from "nanoid";
+ 
+ /**
+@@ -9,17 +11,26 @@
+  * ser executado em uma invocação/instância diferente da função — arquivos
+  * temporários de um passo anterior não sobrevivem entre passos. Por isso cada
+  * etapa que precisa de um arquivo gerado antes o rebaixa a partir da sua URL.
++ *
++ * IMPORTANTE: faz streaming direto pro disco (não carrega o arquivo inteiro
++ * em memória com `res.arrayBuffer()`). Vídeos de banco (Pexels) e clipes já
++ * renderizados podem ter dezenas/centenas de MB — bufferizar isso inteiro na
++ * RAM da function, cena após cena, foi a causa raiz de "ran out of available
++ * memory" na Vercel.
+  */
+ export async function downloadToTemp(
+   url: string,
+   extension: string
+ ): Promise<string> {
+   const res = await fetch(url);
+-  if (!res.ok) {
++  if (!res.ok || !res.body) {
+     throw new Error(`Falha ao baixar arquivo (${res.status}): ${url}`);
+   }
+-  const buffer = Buffer.from(await res.arrayBuffer());
+   const outPath = path.join(os.tmpdir(), `dl-${nanoid(8)}.${extension}`);
+-  await fs.writeFile(outPath, buffer);
++  await pipeline(
++    Readable.fromWeb(res.body as import("stream/web").ReadableStream),
++    fs.createWriteStream(outPath)
++  );
+   return outPath;
+ }
++
+
+--- a/src/lib/storage.ts
++++ b/src/lib/storage.ts
+@@ -1,5 +1,5 @@
+ import { put } from "@vercel/blob";
+-import { promises as fs } from "fs";
++import fs from "fs";
+ 
+ /**
+  * Envia um arquivo local para o Vercel Blob e retorna a URL pública.
+@@ -9,17 +9,24 @@
+  * variáveis BLOB_STORE_ID + VERCEL_OIDC_TOKEN — não é mais necessário um
+  * BLOB_READ_WRITE_TOKEN estático. Isso só é obrigatório se você rodar este
+  * código fora da Vercel (ex: localmente sem `vercel env pull`).
++ *
++ * IMPORTANTE: sobe via stream (`fs.createReadStream` + `multipart: true`) em
++ * vez de `fs.readFile` + Buffer inteiro em memória. Com clipes/vídeo final
++ * podendo passar de dezenas ou centenas de MB, ler o arquivo inteiro pra RAM
++ * antes de cada upload (em cima de tudo que já está em memória no passo de
++ * concat) foi a causa raiz do "ran out of available memory" na Vercel.
+  */
+ export async function uploadFile(
+   localPath: string,
+   destName: string,
+   contentType: string
+ ): Promise<string> {
+-  const buffer = await fs.readFile(localPath);
+-  const blob = await put(destName, buffer, {
++  const stream = fs.createReadStream(localPath);
++  const blob = await put(destName, stream, {
+     access: "public",
+     contentType,
+     addRandomSuffix: true,
++    multipart: true,
+   });
+   return blob.url;
+ }
