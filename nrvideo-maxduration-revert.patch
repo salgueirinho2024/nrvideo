@@ -1,0 +1,20 @@
+--- a/src/app/api/inngest/route.ts
++++ b/src/app/api/inngest/route.ts
+@@ -3,11 +3,12 @@
+ import { generateVideoFunction } from "@/inngest/functions/generate-video";
+ 
+ // Cada etapa do pipeline (TTS, geração de imagem, render de clipe, etc.)
+-// roda dentro de uma invocação desta rota. Com vídeos mais longos (mais
+-// cenas), algumas etapas — principalmente renderizar um clipe ou concatenar
+-// vários — podem demorar mais que o padrão de 10s da Vercel. Aumente aqui
+-// conforme o plano da Vercel (Hobby: até 60s; Pro: até 300s; Enterprise:
+-// até 900s).
++// roda dentro de uma invocação desta rota.
++//
++// IMPORTANTE: tentamos subir isso pra 800s e o deploy falhou (plano atual
++// não permite esse valor) — voltamos pra 300s, que é o valor que já
++// deployava com sucesso antes. Se quiser confirmar o teto real do seu
++// plano, veja o erro exato do deploy que falhou no dashboard da Vercel.
+ export const maxDuration = 300;
+ 
+ export const { GET, POST, PUT } = serve({
