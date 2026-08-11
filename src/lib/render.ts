@@ -397,6 +397,16 @@ export async function renderSceneClipVideo(
   index: number
 ): Promise<string> {
   const outPath = path.join(os.tmpdir(), `scene-video-${index}-${nanoid(6)}.mp4`);
+
+  // Duração real do áudio, usada para travar explicitamente (`-t`) o input
+  // de vídeo em loop (`-stream_loop -1`) logo abaixo. Sem isso, o `-shortest`
+  // no output É o único limite, mas ele só corta DEPOIS de codificar — o
+  // decoder do vídeo de fundo em loop infinito pode ficar lendo/decodificando
+  // adiantado (buffer de sincronismo A/V do filtergraph) sem um teto claro,
+  // o que foi outra fonte de pico de memória do ffmpeg identificada nas
+  // cenas com vídeo de banco. Com `-t` explícito, o decoder já sabe o
+  // tamanho exato do trecho a produzir.
+  const audioDurationSeconds = await getAudioDuration(scene.audioPath);
   const mouthFrames = await getMascotFrames();
 
   // Estados de boca que a cena realmente usa (ver getUsedMouthStates em
@@ -479,7 +489,7 @@ export async function renderSceneClipVideo(
 
   let command = ffmpeg()
     .input(scene.videoPath)
-    .inputOptions(["-stream_loop -1"])
+    .inputOptions(["-stream_loop -1", `-t ${(audioDurationSeconds + 0.5).toFixed(2)}`])
     .input(scene.audioPath)
     .input(scene.overlayImagePath)
     .inputOptions(["-loop 1"]);
@@ -500,7 +510,15 @@ export async function renderSceneClipVideo(
         // function. Troca de custo zero (não precisa aumentar memória na
         // Vercel), só perde um pouco de eficiência de compressão.
         "-preset veryfast",
-        "-threads 2",
+        "-threads 1",
+        // Este é o filtergraph mais pesado do pipeline (vídeo real em loop
+        // decodificado quadro a quadro + overlay de texto + overlay de boca
+        // do mascote com rotate) — limitar as threads do filter_complex
+        // também (além das threads gerais acima) evita que o ffmpeg aloque
+        // buffers de frame extras por thread de filtro rodando em paralelo,
+        // outro pico de memória identificado nessas cenas especificamente
+        // (eram as que geravam "ran out of available memory" na Vercel).
+        "-filter_complex_threads 1",
         "-c:a aac",
         "-b:a 192k",
         // Mesmo motivo do renderSceneClip: fixar sample rate/canais pro

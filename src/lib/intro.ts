@@ -142,6 +142,12 @@ export async function renderIntroClip(input: IntroClipInput): Promise<string> {
         "-threads 2",
         "-c:a aac",
         "-b:a 192k",
+        // Mesmo padrão fixo usado em renderSceneClip/renderSceneClipVideo —
+        // todos os clipes precisam ter EXATAMENTE o mesmo sample
+        // rate/canais de áudio pro concatFinalVideo ("-c copy") não gerar
+        // um áudio final quebrado/mudo.
+        "-ar 44100",
+        "-ac 2",
         "-pix_fmt yuv420p",
         "-shortest",
       ])

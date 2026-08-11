@@ -26,6 +26,16 @@ export const generateVideoFunction = inngest.createFunction(
   {
     id: "generate-nr-video",
     retries: 2,
+    // Etapas de render de cena (ver render.ts) já rodam ffmpeg perto do
+    // teto de memória configurado na function na Vercel. Com Fluid Compute,
+    // instâncias "quentes" podem atender múltiplas invocações concorrentes
+    // compartilhando a MESMA memória — duas gerações de vídeo rodando ffmpeg
+    // ao mesmo tempo na mesma instância é o suficiente pra estourar o
+    // limite mesmo que cada uma sozinha coubesse. Limitar a 1 execução
+    // concorrente desta function específica evita esse cenário (fila no
+    // Inngest em vez de OOM na Vercel); ajuste pra cima só depois de também
+    // subir a memória da function no dashboard da Vercel.
+    concurrency: { limit: 1 },
     // Se todas as tentativas falharem, marca o projeto como erro em vez de
     // deixá-lo travado indefinidamente em "generating_script"/"rendering".
     onFailure: async ({ event }) => {

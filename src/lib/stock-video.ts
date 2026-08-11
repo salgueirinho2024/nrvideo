@@ -76,7 +76,15 @@ function pickBestVideoFile(files: PexelsVideoFile[]): PexelsVideoFile | null {
   const landscape = withSize.filter((f) => f.width >= f.height);
   const candidates = landscape.length > 0 ? landscape : withSize;
 
-  const hd = candidates.filter((f) => f.width >= 1280 && f.width <= 1920);
+  // Teto rebaixado para 720p (era até 1920 largura, ou seja, permitia
+  // Full HD): o vídeo de banco passa por decode + scale + crop + overlay
+  // (com boca do mascote animada por cima) dentro do MESMO processo ffmpeg
+  // em renderSceneClipVideo — decodificar 1080p nesse filtergraph mais
+  // pesado foi identificado como o principal ponto de pico de memória que
+  // levava a function a "ran out of available memory" na Vercel, mesmo já
+  // com preset/threads reduzidos. 720p é mais que suficiente já que o
+  // output final também sai em 1920x1080 via upscale no próprio scale.
+  const hd = candidates.filter((f) => f.width >= 960 && f.width <= 1280);
   const pool = hd.length > 0 ? hd : candidates;
 
   return pool.sort((a, b) => b.width - a.width)[0];
