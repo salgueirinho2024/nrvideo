@@ -1,0 +1,58 @@
+--- a/src/lib/render.ts
++++ b/src/lib/render.ts
+@@ -280,8 +280,12 @@
+       inputs: "bg0",
+       outputs: "bg1",
+     },
+-    // Upscale 2x: headroom de nitidez pro zoompan cortar sem pixelizar.
+-    { filter: "scale", options: { w: 2880, h: 1620 }, inputs: "bg1", outputs: "bg2" },
++    // Upscale 1.25x (não mais 1.5x): headroom suficiente de nitidez pro
++    // zoompan cortar sem pixelizar (zoom máximo usado é 1.32x), com bem
++    // menos pixels por frame passando pelo filter graph — reduz o consumo
++    // de memória/CPU do ffmpeg sem depender de aumentar a memória da
++    // function na Vercel (fix de custo zero).
++    { filter: "scale", options: { w: 2400, h: 1350 }, inputs: "bg1", outputs: "bg2" },
+     {
+       filter: "zoompan",
+       options: {
+@@ -344,6 +348,13 @@
+         "-map [vout]",
+         "-map 1:a",
+         "-c:v libx264",
++        // preset "veryfast" (em vez do default "medium") e threads limitadas:
++        // o preset padrão do libx264 usa buffers de lookahead bem maiores —
++        // essa era outra fonte de consumo de memória do ffmpeg dentro da
++        // function. Troca de custo zero (não precisa aumentar memória na
++        // Vercel), só perde um pouco de eficiência de compressão.
++        "-preset veryfast",
++        "-threads 2",
+         "-c:a aac",
+         "-b:a 192k",
+         "-pix_fmt yuv420p",
+@@ -506,6 +517,13 @@
+         "-map [vout]",
+         "-map 1:a",
+         "-c:v libx264",
++        // preset "veryfast" (em vez do default "medium") e threads limitadas:
++        // o preset padrão do libx264 usa buffers de lookahead bem maiores —
++        // essa era outra fonte de consumo de memória do ffmpeg dentro da
++        // function. Troca de custo zero (não precisa aumentar memória na
++        // Vercel), só perde um pouco de eficiência de compressão.
++        "-preset veryfast",
++        "-threads 2",
+         "-c:a aac",
+         "-b:a 192k",
+         "-pix_fmt yuv420p",
+
+--- a/src/lib/intro.ts
++++ b/src/lib/intro.ts
+@@ -138,6 +138,8 @@
+         "-r",
+         String(RENDER_FPS),
+         "-c:v libx264",
++        "-preset veryfast",
++        "-threads 2",
+         "-c:a aac",
+         "-b:a 192k",
+         "-pix_fmt yuv420p",
+

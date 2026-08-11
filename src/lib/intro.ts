@@ -138,6 +138,8 @@ export async function renderIntroClip(input: IntroClipInput): Promise<string> {
         "-r",
         String(RENDER_FPS),
         "-c:v libx264",
+        "-preset veryfast",
+        "-threads 2",
         "-c:a aac",
         "-b:a 192k",
         "-pix_fmt yuv420p",
