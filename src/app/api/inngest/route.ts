@@ -9,7 +9,7 @@ import { generateVideoFunction } from "@/inngest/functions/generate-video";
 // fácil de 5 minutos. Subimos para 800s (teto disponível em planos
 // Pro/Enterprise com Fluid Compute, sem custo adicional de plano — é só
 // configuração de limite, o billing continua por uso).
-export const maxDuration = 800;
+export const maxDuration = 300;
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
