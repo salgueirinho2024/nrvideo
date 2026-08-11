@@ -94,7 +94,19 @@ function buildIsSpeakingExpr(silences: SilenceInterval[]): string {
  * era hardcoded pros 3 estados da Fase 1 — closed/half/open) pra não
  * precisar tocar aqui de novo se o número de bocas mudar outra vez.
  */
-function buildMouthEnableExpressions(cues: MouthCue[]): Record<MouthState, string> {
+/**
+ * Recebe a lista de estados de boca a considerar (normalmente só os que
+ * aparecem de fato nas `cues` da cena — ver `getUsedMouthStates` — em vez
+ * de sempre os 8 estados existentes) e monta a expressão `enable` de cada
+ * um. Manter essa lista enxuta é o que evita montar 8 cadeias completas de
+ * scale+rotate+overlay no filter_complex quando a cena só usa 2 ou 3
+ * bocas — cada estado fora da lista simplesmente não gasta memória/CPU do
+ * ffmpeg, já que nem chega a virar input/filtro.
+ */
+function buildMouthEnableExpressions(
+  cues: MouthCue[],
+  states: MouthState[]
+): Record<MouthState, string> {
   const safeCues = cues.length <= MAX_MOUTH_CUES_IN_FILTER ? cues : [];
 
   const sumFor = (state: MouthState): string => {
@@ -106,22 +118,39 @@ function buildMouthEnableExpressions(cues: MouthCue[]): Record<MouthState, strin
   };
 
   const sums = Object.fromEntries(
-    MOUTH_ASSET_KEYS.map((key) => [key, sumFor(key)])
+    states.map((key) => [key, sumFor(key)])
   ) as Record<MouthState, string>;
-  const totalSum = MOUTH_ASSET_KEYS.map((key) => sums[key]).join("+");
+  const totalSum = states.map((key) => sums[key]).join("+");
 
   const exprs = {} as Record<MouthState, string>;
-  for (const key of MOUTH_ASSET_KEYS) {
+  for (const key of states) {
     exprs[key] =
       key === "closed"
         ? // "closed" também é o padrão de repouso: fica ativo se
-          // explicitamente marcado OU se nenhum dos 8 estados cobre o
-          // instante t (ex.: cue ausente por causa do limite de segurança
-          // acima).
+          // explicitamente marcado OU se nenhum dos estados presentes cobre
+          // o instante t (ex.: cue ausente por causa do limite de segurança
+          // acima, ou estado sem nenhuma cue nessa cena).
           `gt(${sums.closed},0)+eq(${totalSum},0)`
         : `gt(${sums[key]},0)`;
   }
   return exprs;
+}
+
+/**
+ * Estados de boca que realmente aparecem nas cues dessa cena, na ordem
+ * fixa de MOUTH_ASSET_KEYS, sempre incluindo "closed" (fallback de
+ * repouso/default mesmo que nenhuma cue "closed" explícita exista).
+ * Cenas curtas tipicamente usam só 2-4 dos 8 estados — restringir a isso
+ * evita montar as cadeias de filtro (e os inputs de imagem correspondentes)
+ * dos estados não usados, reduzindo bastante o consumo de memória do
+ * ffmpeg por cena.
+ */
+function getUsedMouthStates(cues: MouthCue[]): MouthState[] {
+  const used = new Set<MouthState>(["closed"]);
+  if (cues.length <= MAX_MOUTH_CUES_IN_FILTER) {
+    for (const c of cues) used.add(c.state);
+  }
+  return MOUTH_ASSET_KEYS.filter((key) => used.has(key));
 }
 
 /**
@@ -220,17 +249,22 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   const mouthFrames = await getMascotFrames();
 
   const duration = await getAudioDuration(scene.audioPath);
-  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues);
+  // Só os estados de boca que a cena realmente usa (tipicamente 2-4 dos 8) —
+  // ver getUsedMouthStates. Evita montar inputs/filtros pros estados que
+  // essa cena nunca precisa, principal causa do consumo alto de memória do
+  // ffmpeg nessa etapa.
+  const usedStates = getUsedMouthStates(scene.mouthCues);
+  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues, usedStates);
   const rotateExpr = headMotion.buildFfmpegRotateExpr();
 
   const mascotX = `W-w-${MASCOT_MARGIN}`;
   const mascotY = `${MASCOT_MARGIN}`; // canto SUPERIOR direito
 
   // Índices dos inputs do ffmpeg: 0 = imagem da cena, 1 = áudio,
-  // 2..9 = os 8 estados de boca, na ordem de MOUTH_ASSET_KEYS.
+  // 2..N = os estados de boca usados nessa cena, na ordem de MOUTH_ASSET_KEYS.
   const MOUTH_INPUT_BASE = 2;
   const mouthInputIdx = Object.fromEntries(
-    MOUTH_ASSET_KEYS.map((key, i) => [key, MOUTH_INPUT_BASE + i])
+    usedStates.map((key, i) => [key, MOUTH_INPUT_BASE + i])
   ) as Record<MouthState, number>;
 
   let zoomExpr: string;
@@ -259,7 +293,7 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   assertBalancedExpr("zoompan:z", zoomExpr);
   assertBalancedExpr("zoompan:x", xExpr);
   assertBalancedExpr("zoompan:y", yExpr);
-  for (const key of MOUTH_ASSET_KEYS) {
+  for (const key of usedStates) {
     assertBalancedExpr(`overlay:enable(${key})`, mouthEnableExpr[key]);
   }
   assertBalancedExpr("rotate:a", rotateExpr);
@@ -299,8 +333,9 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
       inputs: "bg2",
       outputs: "bg",
     },
-    // Os 8 frames de boca do mascote, escalados pro tamanho final da bolha.
-    ...MOUTH_ASSET_KEYS.map((key) => ({
+    // Frames de boca do mascote realmente usados nessa cena, escalados pro
+    // tamanho final da bolha (ver usedStates acima).
+    ...usedStates.map((key) => ({
       filter: "scale",
       options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
       inputs: `${mouthInputIdx[key]}:v`,
@@ -314,7 +349,7 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     // circular, ver mascot.tsx), e `ow=iw:oh=ih` mantém o tamanho do
     // canvas igual ao original (rotação pequena o suficiente pra não
     // cortar a bolha).
-    ...MOUTH_ASSET_KEYS.map((key) => ({
+    ...usedStates.map((key) => ({
       filter: "rotate",
       options: { a: rotateExpr, c: "none", ow: "iw", oh: "ih" },
       inputs: key,
@@ -324,9 +359,9 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     // base/fallback), os outros 7 por cima. Como as expressões `enable` são
     // mutuamente exclusivas (ver buildMouthEnableExpressions), só uma
     // camada fica visível em cada instante t.
-    ...MOUTH_ASSET_KEYS.map((key, i) => {
+    ...usedStates.map((key, i) => {
       const prevOut = i === 0 ? "bg" : "ov" + (i - 1);
-      const outName = i === MOUTH_ASSET_KEYS.length - 1 ? "vout" : "ov" + i;
+      const outName = i === usedStates.length - 1 ? "vout" : "ov" + i;
       return {
         filter: "overlay",
         options: { x: mascotX, y: mascotY, enable: mouthEnableExpr[key] },
@@ -337,7 +372,7 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   ];
 
   let command = ffmpeg().input(scene.imagePath).inputOptions(["-loop 1"]).input(scene.audioPath);
-  for (const key of MOUTH_ASSET_KEYS) {
+  for (const key of usedStates) {
     command = command.input(mouthFrames[key]).inputOptions(["-loop 1"]);
   }
 

@@ -187,6 +187,14 @@ export class PhonemeService {
     durationSeconds: number,
     dialogText?: string
   ): Promise<VisemeTimeline> {
+    // O Rhubarb só aceita '.wav' e '.ogg' — o áudio do TTS chega em '.mp3',
+    // que ele rejeita com "Unsupported file extension" (erro que antes
+    // passava despercebido: caía silenciosamente no fallback heurístico,
+    // ver catch em extractVisemes). Converte pra um WAV temporário aqui e
+    // aponta o Rhubarb pra ele; o mp3 original não é tocado.
+    const wavPath = audioFilePath.replace(/\.(mp3|wav|ogg)$/i, ".rhubarb-input.wav");
+    await this.convertToWav(audioFilePath, wavPath);
+
     const outputJsonPath = audioFilePath.replace(/\.(mp3|wav)$/i, ".rhubarb.json");
     // Recognizer "phonetic" (em vez do padrão "pocketSphinx", que só
     // reconhece inglês) — necessário porque a narração é em português.
@@ -201,22 +209,39 @@ export class PhonemeService {
       await fs.writeFile(dialogPath, dialogText, "utf-8");
       args.push("-d", dialogPath);
     }
-    args.push(audioFilePath);
+    args.push(wavPath);
 
-    await this.runBinary(args);
+    try {
+      await this.runBinary(args);
 
-    const raw = await fs.readFile(outputJsonPath, "utf-8");
-    const parsed = JSON.parse(raw) as RhubarbOutput;
-    const cues: VisemeCue[] = parsed.mouthCues.map((c) => ({
-      start: c.start,
-      end: c.end,
-      shape: normalizeShape(c.value),
-    }));
+      const raw = await fs.readFile(outputJsonPath, "utf-8");
+      const parsed = JSON.parse(raw) as RhubarbOutput;
+      const cues: VisemeCue[] = parsed.mouthCues.map((c) => ({
+        start: c.start,
+        end: c.end,
+        shape: normalizeShape(c.value),
+      }));
 
-    await fs.unlink(outputJsonPath).catch(() => undefined);
-    if (dialogPath) await fs.unlink(dialogPath).catch(() => undefined);
+      return { sceneId, durationSeconds, cues, source: "rhubarb" };
+    } finally {
+      await fs.unlink(wavPath).catch(() => undefined);
+      await fs.unlink(outputJsonPath).catch(() => undefined);
+      if (dialogPath) await fs.unlink(dialogPath).catch(() => undefined);
+    }
+  }
 
-    return { sceneId, durationSeconds, cues, source: "rhubarb" };
+  /** Converte qualquer áudio suportado pelo ffmpeg para um WAV PCM 16-bit
+   *  mono — formato que o Rhubarb aceita e que também é o mais rápido pra
+   *  ele processar (não precisa decodificar mp3 internamente). */
+  private convertToWav(inputPath: string, outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .outputOptions(["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+        .output(outputPath)
+        .on("end", () => resolve())
+        .on("error", reject)
+        .run();
+    });
   }
 
   private runBinary(args: string[]): Promise<void> {
