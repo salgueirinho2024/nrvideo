@@ -190,7 +190,7 @@ export class PhonemeService {
     const outputJsonPath = audioFilePath.replace(/\.(mp3|wav)$/i, ".rhubarb.json");
     // Recognizer "phonetic" (em vez do padrão "pocketSphinx", que só
     // reconhece inglês) — necessário porque a narração é em português.
-    const args = ["-f", "json", "-o", outputJsonPath, "--exportFormat", "json", "-r", "phonetic"];
+    const args = ["-o", outputJsonPath, "--exportFormat", "json", "-r", "phonetic"];
 
     let dialogPath: string | null = null;
     if (dialogText) {

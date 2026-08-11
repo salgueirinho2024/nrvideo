@@ -17,7 +17,9 @@
 
 import path from "path";
 import os from "os";
-import { promises as fs } from "fs";
+import fs, { promises as fsPromises } from "fs";
+import { pipeline } from "stream/promises";
+import { Readable } from "stream";
 import { nanoid } from "nanoid";
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
@@ -164,13 +166,30 @@ export async function fetchStockVideo(
         } finally {
           clearTimeout(videoTimeout);
         }
-        if (!videoRes.ok) continue;
+        if (!videoRes.ok || !videoRes.body) continue;
 
-        const buffer = Buffer.from(await videoRes.arrayBuffer());
-        if (buffer.length === 0) continue;
-
+        // Streaming direto pro disco (não Buffer.from(arrayBuffer()) inteiro
+        // em memória) — vídeos HD da Pexels passam facilmente de 20-50MB, e
+        // isso empilhado com o resto do pipeline (ffmpeg etc.) era a causa
+        // raiz do "ran out of available memory" na Vercel. Mesmo padrão já
+        // usado em downloadToTemp (ver download.ts) e uploadFile (storage.ts).
         const outPath = path.join(os.tmpdir(), `stock-video-${nanoid(8)}.mp4`);
-        await fs.writeFile(outPath, buffer);
+        try {
+          await pipeline(
+            Readable.fromWeb(videoRes.body as import("stream/web").ReadableStream),
+            fs.createWriteStream(outPath)
+          );
+        } catch {
+          await fsPromises.unlink(outPath).catch(() => undefined);
+          continue;
+        }
+
+        const stat = await fsPromises.stat(outPath).catch(() => null);
+        if (!stat || stat.size === 0) {
+          await fsPromises.unlink(outPath).catch(() => undefined);
+          continue;
+        }
+
         return { path: outPath, videoId: video.id };
       }
 
