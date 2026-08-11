@@ -50,6 +50,14 @@ interface PexelsSearchResponse {
   videos?: PexelsVideo[];
 }
 
+export interface StockVideoResult {
+  path: string;
+  /** ID do clipe na Pexels — usado pelo chamador (generate-video.ts) para
+   *  não repetir o MESMO clipe em duas cenas do mesmo vídeo (ver
+   *  `excludeIds` abaixo). */
+  videoId: number;
+}
+
 /**
  * Escolhe o melhor arquivo dentro das variantes que a Pexels retorna por
  * clipe: paisagem (largura >= altura, já que o vídeo final é 16:9), e
@@ -79,8 +87,18 @@ function pickBestVideoFile(files: PexelsVideoFile[]): PexelsVideoFile | null {
  * resultado, falha de rede) — o chamador (generate-video.ts) trata isso
  * caindo de volta pra ilustração estática da cena, igual já faz hoje quando
  * a geração de imagem falha.
+ *
+ * `excludeIds`: IDs de clipes da Pexels já usados em OUTRAS cenas do MESMO
+ * vídeo sendo gerado (ver generate-video.ts) — evita que duas cenas
+ * diferentes do mesmo treinamento acabem mostrando o mesmo clipe de banco
+ * repetido (relatado como "os vídeos... às vezes nem batem" / repetição).
+ * Se todos os resultados da busca já tiverem sido usados, cai pro primeiro
+ * mesmo assim (repetir é melhor que a cena ficar sem nada).
  */
-export async function fetchStockVideo(query: string): Promise<string> {
+export async function fetchStockVideo(
+  query: string,
+  excludeIds: number[] = []
+): Promise<StockVideoResult> {
   if (!PEXELS_API_KEY) {
     throw new Error(
       "PEXELS_API_KEY não configurada. Crie uma chave grátis (sem cartão) em " +
@@ -127,8 +145,14 @@ export async function fetchStockVideo(query: string): Promise<string> {
         throw new Error(`Pexels: nenhum vídeo encontrado para a query "${query}".`);
       }
 
+      // Prioriza resultados que ainda não foram usados em outra cena deste
+      // mesmo vídeo (ver excludeIds acima); se sobrar só clipe repetido,
+      // usa mesmo assim (ordem original preservada como fallback).
+      const unused = videos.filter((v) => !excludeIds.includes(v.id));
+      const orderedVideos = unused.length > 0 ? unused : videos;
+
       // Tenta os resultados em ordem até achar um com arquivo baixável.
-      for (const video of videos) {
+      for (const video of orderedVideos) {
         const file = pickBestVideoFile(video.video_files ?? []);
         if (!file) continue;
 
@@ -147,7 +171,7 @@ export async function fetchStockVideo(query: string): Promise<string> {
 
         const outPath = path.join(os.tmpdir(), `stock-video-${nanoid(8)}.mp4`);
         await fs.writeFile(outPath, buffer);
-        return outPath;
+        return { path: outPath, videoId: video.id };
       }
 
       throw new Error(

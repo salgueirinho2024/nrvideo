@@ -1,29 +1,32 @@
 // Mascote usado como bolha "falando" no canto do vídeo de treinamento.
 //
-// Usa fotos/ilustrações da personagem, já pré-processadas (recorte
-// circular na resolução original + anel verde/branco + sombra) e salvas
-// como assets estáticos em public/mascot/. Não há geração em runtime: os
-// PNGs finais já saem prontos do repositório (gerados por
-// scripts/generate-mascot-visemes.mjs), então esta função só resolve os
+// Usa ilustrações da personagem, já pré-processadas (recorte circular +
+// anel verde/branco + sombra, RGBA de verdade) e salvas como assets
+// estáticos em public/mascot/. Não há geração em runtime: os PNGs finais
+// já saem prontos do repositório, então esta função só resolve os
 // caminhos.
 //
-// HISTÓRICO / FIX (boca "de bico" + "pulando"):
-// - O par fechado/aberto usado antes (mouth-closed.png + mouth-open-1.png,
-//   este último salvo como mouth-open.png) tinha o MELHOR alinhamento de
-//   zoom/enquadramento entre os dois — por isso foi o par escolhido — mas a
-//   foto de boca aberta em si mostrava um "O" arredondado/de bico, não uma
-//   boca de fala natural (é a raiz do "tá fazendo bico" relatado).
-// - Correção original: realinhamos a 2ª opção de boca aberta em cima de
-//   mouth-closed.png por feature matching (ORB, região acima da boca) e
-//   reescala/deslocamento (warpAffine).
+// PIPELINE DE GERAÇÃO (2 passos, sempre nessa ordem):
+// 1. scripts/generate-mascot-visemes.mjs — gera as 8 imagens cruas via
+//    Cloudflare (flux-1-schnell), personagem e seed fixos, só o prompt da
+//    boca muda entre elas.
+// 2. scripts/align-mascot-visemes.py — OBRIGATÓRIO depois do passo 1. As
+//    imagens cruas do passo 1 NÃO saem alinhadas entre si (o modelo não
+//    garante pixel-perfect mesmo com seed fixa: cabeça um pouco maior/
+//    menor, deslocada, ângulo diferente) nem têm fundo transparente. Sem
+//    esse passo, o render.ts troca de PNG a cada estado de boca e a
+//    mascote parece "pulando"/"girando" no vídeo — não é bug de lip sync,
+//    é desalinhamento das imagens-fonte. O script alinha por ECC (região
+//    estável do rosto: testa/olhos/sobrancelhas/capacete, fora da boca),
+//    recorta em círculo, e adiciona anel + sombra.
 //
-// UPGRADE PRA 8 BOCAS (visemas): a Fase 1 usava só 3 estados (closed/
-// half/open) — funcional, mas a boca não distinguia vogais entre si. Agora
-// cada um dos 8 visemas visualmente distintos do Rhubarb (X/A compartilham
-// asset — ver types.ts) tem seu próprio PNG, gerado com personagem e seed
-// fixos (mesma cara em todas, só a boca muda — ver
-// scripts/generate-mascot-visemes.mjs) e depois alinhado do mesmo jeito
-// que o par closed/open original, pra não "pular" ao trocar de frame.
+// HISTÓRICO: até a versão anterior deste arquivo, o passo 2 era descrito
+// como "alinhamento manual" mas nunca foi de fato aplicado aos PNGs
+// commitados (estavam como retângulo opaco, sem alpha, com a cabeça em
+// posições diferentes entre os 8) — essa é a causa raiz do "mascote se
+// movendo em círculos" relatado. scripts/align-mascot-visemes.py resolve
+// isso de forma reprodutível (não depende de edição manual em editor de
+// imagem).
 //
 // A "fala" é sincronizada com o áudio de verdade: src/lib/lipsync/ extrai
 // fonemas reais (Rhubarb Lip Sync, com fallback heurístico) e o render.ts

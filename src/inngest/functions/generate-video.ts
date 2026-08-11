@@ -15,6 +15,7 @@ import {
   renderSceneClipVideo,
   concatFinalVideo,
 } from "@/lib/render";
+import { renderIntroClip } from "@/lib/intro";
 import { buildSceneLipsync } from "@/lib/lipsync/lipsync-service";
 import type { MouthCue } from "@/lib/lipsync/types";
 import { promises as fsPromises } from "fs";
@@ -110,6 +111,10 @@ export const generateVideoFunction = inngest.createFunction(
       highlight: boolean;
       mediaType: "image" | "video";
       sceneVideoUrl: string | null;
+      // ID do clipe da Pexels usado nessa cena (null se a cena não usou
+      // vídeo de banco) — alimenta `excludeIds` das próximas cenas pra não
+      // repetir o mesmo clipe duas vezes no mesmo vídeo (ver stock-video.ts).
+      pexelsVideoId: number | null;
       // Timeline real de boca (fonemas via Rhubarb/heurística), calculada
       // uma vez por cena em generate-assets-scene-N e reaproveitada em
       // render-clip-scene-N — ver src/lib/lipsync/.
@@ -117,6 +122,17 @@ export const generateVideoFunction = inngest.createFunction(
     }[] = [];
     for (let i = 0; i < script.sceneIds.length; i++) {
       const sceneId = script.sceneIds[i];
+      // Calculado FORA do step.run, a partir do que já foi acumulado em
+      // sceneAssets — precisa ser assim (e não um contador vivendo dentro
+      // do step) porque o Inngest reexecuta a função inteira a cada nova
+      // etapa, reaproveitando (sem rodar de novo) os step.run já
+      // concluídos: o array `sceneAssets` reflete corretamente o histórico
+      // mesmo quando steps anteriores só estão sendo "replayed" da cache,
+      // mas uma variável mutável só atualizada DENTRO do callback do
+      // step.run não seria — ela resetaria a cada replay.
+      const usedPexelsIds = sceneAssets
+        .map((a) => a.pexelsVideoId)
+        .filter((id): id is number => id != null);
       const assets = await step.run(`generate-assets-scene-${i}`, async () => {
         const scene = await db.query.scenes.findFirst({
           where: eq(scenes.id, sceneId),
@@ -176,15 +192,17 @@ export const generateVideoFunction = inngest.createFunction(
         // usada pra falha de geração de imagem (ver imageError abaixo).
         let sceneVideoUrl: string | null = null;
         let videoError: string | null = null;
+        let pexelsVideoId: number | null = null;
         if (scene.useStockVideo && scene.videoSearchQuery) {
           try {
-            const stockVideoPath = await fetchStockVideo(scene.videoSearchQuery);
+            const stockVideo = await fetchStockVideo(scene.videoSearchQuery, usedPexelsIds);
             sceneVideoUrl = await uploadFile(
-              stockVideoPath,
+              stockVideo.path,
               `${projectId}/scene-${scene.order}-stock-video.mp4`,
               "video/mp4"
             );
-            await fsPromises.unlink(stockVideoPath).catch(() => undefined);
+            pexelsVideoId = stockVideo.videoId;
+            await fsPromises.unlink(stockVideo.path).catch(() => undefined);
           } catch (err) {
             videoError = err instanceof Error ? err.message : String(err);
             console.error(`Falha ao buscar vídeo de banco da cena ${scene.order}:`, err);
@@ -229,6 +247,7 @@ export const generateVideoFunction = inngest.createFunction(
             highlight: scene.highlight,
             mediaType: "video" as const,
             sceneVideoUrl,
+            pexelsVideoId,
             mouthCues: lipsyncResult.mouthCues,
           };
         }
@@ -287,6 +306,7 @@ export const generateVideoFunction = inngest.createFunction(
           highlight: scene.highlight,
           mediaType: "image" as const,
           sceneVideoUrl: null,
+          pexelsVideoId: null,
           mouthCues: lipsyncResult.mouthCues,
         };
       });
@@ -306,7 +326,18 @@ export const generateVideoFunction = inngest.createFunction(
         .where(eq(projects.id, projectId));
     });
 
-    const clipUrls: string[] = [];
+    // Clipe de abertura (marca Previna-se) — etapa isolada como as demais,
+    // sempre a PRIMEIRA da lista de clipes concatenados. Usa o mesmo
+    // 1920x1080/30fps/h264/aac dos clipes de cena (ver intro.ts) pra entrar
+    // no concat "-c copy" sem re-encode.
+    const introUrl = await step.run("render-intro-clip", async () => {
+      const clipPath = await renderIntroClip({ projectTitle: script.title });
+      const url = await uploadFile(clipPath, `${projectId}/intro-clip.mp4`, "video/mp4");
+      await fsPromises.unlink(clipPath).catch(() => undefined);
+      return url;
+    });
+
+    const clipUrls: string[] = [introUrl];
     for (let i = 0; i < sceneAssets.length; i++) {
       const asset = sceneAssets[i];
       const clipUrl = await step.run(`render-clip-scene-${i}`, async () => {

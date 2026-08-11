@@ -165,12 +165,16 @@ async function main() {
   }
 
   console.log(
-    "\nPronto. Revise as imagens em public/mascot/ — se alguma boca não " +
-      "ficou parecida com as outras (cara diferente, ângulo diferente), " +
+    "\nPronto. Revise as imagens em public/mascot/ — se alguma boca ficou " +
+      "MUITO diferente das outras (personagem trocada, ângulo bem torto), " +
       "regenere só ela com:\n" +
-      "  node --env-file=.env.local scripts/generate-mascot-visemes.mjs <key>\n" +
-      "Depois, se precisar, alinhe manualmente sobre mouth-closed.png " +
-      "(mesmo processo de recorte/realinhamento já usado antes)."
+      "  node --env-file=.env.local scripts/generate-mascot-visemes.mjs <key>\n\n" +
+      "SEMPRE rode o alinhamento automático depois (obrigatório — os PNGs " +
+      "crus daqui NÃO estão alinhados entre si nem recortados em círculo, " +
+      "e usá-los direto faz a mascote parecer 'pulando'/'girando' no " +
+      "vídeo final):\n" +
+      "  pip install opencv-python-headless numpy pillow\n" +
+      "  python3 scripts/align-mascot-visemes.py"
   );
 }
 

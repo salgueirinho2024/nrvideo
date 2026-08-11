@@ -159,21 +159,42 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
         </>
       )}
 
-      {/* Cabeçalho */}
+      {/* Cabeçalho: numeração da cena com selo de marca (barrinha colorida +
+          maiúsculas espaçadas), consistente com a intro/marca Previna-se. */}
       <div
         style={{
           display: "flex",
+          alignItems: "center",
           padding: "56px 80px 0 80px",
-          color: "#8fb4dd",
-          fontSize: 30,
-          letterSpacing: 2,
         }}
       >
-        {`CENA ${input.sceneNumber} / ${input.totalScenes}`}
+        <div
+          style={{
+            display: "flex",
+            width: 8,
+            height: 28,
+            borderRadius: 4,
+            background: "#f4a940",
+            marginRight: 16,
+          }}
+        />
+        <div
+          style={{
+            display: "flex",
+            color: "#c8def4",
+            fontSize: 28,
+            fontWeight: 700,
+            letterSpacing: 3,
+          }}
+        >
+          {`CENA ${input.sceneNumber} DE ${input.totalScenes}`}
+        </div>
       </div>
 
-      {/* Corpo principal: texto da cena centralizado sobre a ilustração de
-          fundo (ou sobre o gradiente, quando não há imagem). */}
+      {/* Corpo principal: título da cena centralizado sobre a ilustração de
+          fundo (ou sobre o gradiente, quando não há imagem). Sombra de
+          texto (em vez de só a caixa escura por trás) pra parecer título de
+          verdade, não uma legenda genérica. */}
       <div
         style={{
           display: "flex",
@@ -186,10 +207,12 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
           style={{
             display: "flex",
             color: "#ffffff",
-            fontSize: 60,
+            fontSize: 62,
             fontWeight: 700,
-            lineHeight: 1.3,
+            lineHeight: 1.25,
+            letterSpacing: -0.5,
             maxWidth: 1400,
+            textShadow: "0 4px 18px rgba(0,0,0,0.55)",
           }}
         >
           {input.screenText}
@@ -200,42 +223,75 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
           toda a duração do áudio, já que a imagem do slide é estática por
           cena inteira — ver src/lib/render.ts). Não é sincronizada palavra a
           palavra (o TTS usado não devolve timestamps por palavra), mas cobre
-          a cena inteira, como legenda de filme por frase. */}
+          a cena inteira, como legenda de filme por frase. Estilo "pílula"
+          centralizada (padrão de legenda profissional tipo YouTube/Netflix)
+          em vez da caixa retangular de borda a borda anterior. */}
       {input.narrationText && (
+        <div style={{ display: "flex", justifyContent: "center", margin: "0 80px 30px 80px" }}>
+          <div
+            style={{
+              display: "flex",
+              padding: "20px 40px",
+              borderRadius: 14,
+              background: "rgba(6,14,26,0.72)",
+              boxShadow: "0 6px 20px rgba(0,0,0,0.35)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                color: "#f8fafc",
+                fontSize: 30,
+                fontWeight: 700,
+                lineHeight: 1.45,
+                textAlign: "center",
+                maxWidth: 1600,
+              }}
+            >
+              {input.narrationText}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rodapé: marca + título do projeto + barra de progresso */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          padding: "0 80px 48px 80px",
+        }}
+      >
         <div
           style={{
             display: "flex",
-            margin: "0 80px 28px 80px",
-            padding: "22px 36px",
-            borderRadius: 16,
-            background: "rgba(0,0,0,0.45)",
+            alignItems: "center",
+            marginBottom: 18,
           }}
         >
           <div
             style={{
               display: "flex",
-              color: "#f2f6fb",
-              fontSize: 32,
+              color: "#f4a940",
+              fontSize: 24,
               fontWeight: 700,
-              lineHeight: 1.4,
-              maxWidth: 1760,
+              letterSpacing: 1,
+              marginRight: 14,
             }}
           >
-            {input.narrationText}
+            {"PREVINA-SE"}
           </div>
-        </div>
-      )}
-
-      {/* Rodapé: título + barra de progresso */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          padding: "0 80px 56px 80px",
-        }}
-      >
-        <div style={{ display: "flex", color: "#8fb4dd", fontSize: 26, marginBottom: 20 }}>
-          {input.projectTitle}
+          <div
+            style={{
+              display: "flex",
+              color: "#8fb4dd",
+              fontSize: 24,
+              fontWeight: 700,
+              opacity: 0.85,
+            }}
+          >
+            {`· ${input.projectTitle}`}
+          </div>
         </div>
         <div
           style={{
@@ -252,7 +308,7 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
               width: `${Math.round(progress * 100)}%`,
               height: "100%",
               borderRadius: 5,
-              background: "#f4a940",
+              background: "linear-gradient(90deg, #f4a940 0%, #f7c46c 100%)",
             }}
           />
         </div>
