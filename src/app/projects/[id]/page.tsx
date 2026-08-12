@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 const STEPS = [
@@ -114,9 +114,12 @@ interface Project {
 
 export default function ProjectPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const [project, setProject] = useState<Project | null>(null);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     let stop = false;
@@ -153,6 +156,26 @@ export default function ProjectPage() {
   }, [params.id]);
 
   const stepIndex = project ? STEPS.findIndex((s) => s.key === project.status) : -1;
+
+  async function handleDelete() {
+    if (!project) return;
+    if (!confirm(`Apagar o projeto "${project.title}"? Isso remove os arquivos (vídeo, áudio, imagens) e não pode ser desfeito.`)) {
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error((data && data.error) || `Erro ${res.status} ao apagar o projeto.`);
+      }
+      router.push("/");
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Erro ao apagar o projeto.");
+      setDeleting(false);
+    }
+  }
 
   return (
     <main style={{ maxWidth: 780, margin: "0 auto", padding: "48px 24px" }}>
@@ -192,7 +215,49 @@ export default function ProjectPage() {
             @keyframes nrvideo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
           `}</style>
 
-          <h1 style={{ fontSize: 28, margin: "16px 0 24px" }}>{project.title}</h1>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+              gap: 16,
+              margin: "16px 0 24px",
+            }}
+          >
+            <h1 style={{ fontSize: 28, margin: 0 }}>{project.title}</h1>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              style={{
+                flexShrink: 0,
+                background: "transparent",
+                border: "1px solid #5a1f1f",
+                color: "#ff8080",
+                borderRadius: 8,
+                padding: "8px 14px",
+                fontSize: 13,
+                cursor: deleting ? "default" : "pointer",
+                opacity: deleting ? 0.6 : 1,
+              }}
+            >
+              {deleting ? "Apagando..." : "Apagar projeto"}
+            </button>
+          </div>
+          {deleteError && (
+            <div
+              style={{
+                background: "#2c1414",
+                border: "1px solid #5a1f1f",
+                color: "#ff8080",
+                padding: 12,
+                borderRadius: 8,
+                marginBottom: 16,
+                fontSize: 13,
+              }}
+            >
+              {deleteError}
+            </div>
+          )}
 
           {project.status !== "done" && project.status !== "error" && (
             <div

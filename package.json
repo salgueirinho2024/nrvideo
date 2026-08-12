@@ -13,10 +13,11 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1108.0",
+    "@aws-sdk/lib-storage": "^3.1108.0",
     "@ffprobe-installer/ffprobe": "^2.1.2",
     "@neondatabase/serverless": "^0.10.4",
     "@resvg/resvg-js": "^2.6.2",
-    "@vercel/blob": "^2.6.1",
     "drizzle-orm": "^0.36.4",
     "ffmpeg-static": "^5.2.0",
     "fluent-ffmpeg": "^2.1.3",

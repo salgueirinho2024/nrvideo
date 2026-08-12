@@ -13,7 +13,7 @@ você cola o texto da norma, e o pipeline gera roteiro (Gemini), narração
 - **Satori + resvg** — gera os slides (PNG 1920x1080) a partir de JSX
 - **fluent-ffmpeg / ffmpeg-static** — monta cada cena (imagem + áudio) e concatena no vídeo final
 - **Neon (Postgres) + Drizzle ORM** — persistência de projetos e cenas
-- **Vercel Blob** — armazena áudios, slides e o vídeo final
+- **Cloudflare R2** — armazena áudios, slides e o vídeo final
 
 ## Estrutura
 
@@ -36,7 +36,7 @@ src/
     tts.ts          # Narração (msedge-tts)
     slides.tsx       # Slides PNG (Satori + resvg)
     render.ts        # Monta os clipes e concatena (FFmpeg)
-    storage.ts       # Upload para o Vercel Blob
+    storage.ts       # Upload para o Cloudflare R2
     download.ts      # Baixa asset remoto para /tmp (necessário entre steps do Inngest)
   db/
     schema.ts         # projects, scenes, scriptLogs
@@ -65,7 +65,7 @@ public/fonts/Inter-Bold.woff   # Fonte usada nos slides
    o mascote sobrepostos em modo transparente); as demais continuam usando
    `renderSceneClip` (imagem + Ken Burns), com a mesma animação de boca do
    mascote nos dois casos. No fim concatena tudo e envia o vídeo final para
-   o Blob.
+   o R2.
 4. **finalize**: marca o projeto como `done` com a URL do vídeo.
 
 Cada etapa é isolada via `step.run`, então se uma falhar o Inngest só
@@ -95,9 +95,10 @@ cp .env.example .env.local
   via login com GitHub. Sem ela, a geração de ilustração das cenas roda no
   tier anônimo do Pollinations, que só permite 1 requisição simultânea por
   IP e costuma dar 429 "Queue full for IP" em produção
-- `BLOB_READ_WRITE_TOKEN`: crie um Blob store na Vercel (Storage → Create →
-  Blob) e copie o token, ou rode `vercel env pull` se o projeto já estiver
-  linkado
+- `R2_BUCKET_NAME` / `R2_PUBLIC_URL` / `R2_ACCESS_KEY_ID` /
+  `R2_SECRET_ACCESS_KEY`: crie um bucket R2 grátis (10GB, sem cartão) em
+  Cloudflare → R2 Object Storage, ative o acesso público e gere um API
+  Token específico do bucket — ver `.env.example` para o passo a passo
 - `PEXELS_API_KEY` (opcional, mas necessário para vídeos temáticos): chave
   gratuita em [pexels.com/api](https://www.pexels.com/api/) usada para
   buscar clipes reais de banco de vídeo para até 3 cenas do roteiro (ex: um
@@ -137,8 +138,9 @@ vídeo". Acompanhe o progresso na página do projeto.
 ## Deploy (Vercel)
 
 1. Suba o repositório e importe na Vercel.
-2. Conecte um **Neon Postgres** e um **Blob Store** ao projeto (Storage tab)
-   — isso preenche `DATABASE_URL` e `BLOB_READ_WRITE_TOKEN` automaticamente.
+2. Conecte um **Neon Postgres** ao projeto (Storage tab) — isso preenche
+   `DATABASE_URL` automaticamente. Crie o bucket **Cloudflare R2** à parte
+   (ver `.env.example`) e cole as variáveis `R2_*` manualmente.
 3. Adicione `GEMINI_API_KEY` nas variáveis de ambiente do projeto.
 4. Instale a [integração do Inngest](https://vercel.com/integrations/inngest)
    (preenche `INNGEST_EVENT_KEY` e `INNGEST_SIGNING_KEY` e registra

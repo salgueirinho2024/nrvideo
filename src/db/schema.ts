@@ -33,7 +33,7 @@ export const projects = pgTable("projects", {
   targetMinutes: integer("target_minutes").notNull().default(5),
   status: text("status").$type<ProjectStatus>().notNull().default("pending"),
   errorMessage: text("error_message"),
-  // URL do vídeo final no Vercel Blob, quando pronto
+  // URL do vídeo final no Cloudflare R2, quando pronto
   videoUrl: text("video_url"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -70,7 +70,7 @@ export const scenes = pgTable("scenes", {
   // Palavras-chave (em inglês) usadas para buscar o vídeo de banco, quando
   // useStockVideo = true.
   videoSearchQuery: text("video_search_query"),
-  // URL do clipe de vídeo de banco baixado para esta cena (Vercel Blob).
+  // URL do clipe de vídeo de banco baixado para esta cena (Cloudflare R2).
   // Fica null se a cena não usa vídeo de banco, ou se a busca falhou (nesse
   // caso a cena cai de volta pra ilustração estática — ver videoError).
   sceneVideoUrl: text("scene_video_url"),
@@ -90,7 +90,7 @@ export const scenes = pgTable("scenes", {
   // narração (ver emotion-detector.ts) — hoje só persistida para
   // debug/QA; a Fase 2 (camada de sobrancelha) é quem vai consumir isso.
   detectedEmotion: text("detected_emotion"),
-  // URL do JSON bruto da timeline de visemas no Blob, para depuração.
+  // URL do JSON bruto da timeline de visemas no R2, para depuração.
   visemeTimelineUrl: text("viseme_timeline_url"),
   assetsReady: boolean("assets_ready").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),

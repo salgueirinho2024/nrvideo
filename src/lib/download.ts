@@ -6,7 +6,7 @@ import { Readable } from "stream";
 import { nanoid } from "nanoid";
 
 /**
- * Baixa um arquivo remoto (ex: Vercel Blob) para um caminho local temporário.
+ * Baixa um arquivo remoto (ex: Cloudflare R2) para um caminho local temporário.
  * Necessário porque, em funções Inngest com múltiplos passos, cada passo pode
  * ser executado em uma invocação/instância diferente da função — arquivos
  * temporários de um passo anterior não sobrevivem entre passos. Por isso cada
