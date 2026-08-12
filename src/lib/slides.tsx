@@ -223,33 +223,29 @@ export async function generateSlideImage(input: SlideInput): Promise<string> {
           toda a duração do áudio, já que a imagem do slide é estática por
           cena inteira — ver src/lib/render.ts). Não é sincronizada palavra a
           palavra (o TTS usado não devolve timestamps por palavra), mas cobre
-          a cena inteira, como legenda de filme por frase. Estilo "pílula"
-          centralizada (padrão de legenda profissional tipo YouTube/Netflix)
-          em vez da caixa retangular de borda a borda anterior. */}
+          a cena inteira, como legenda de filme por frase.
+          Antes havia uma "pílula" com fundo escuro próprio por trás do
+          texto — como o scrim de fundo (acima) já escurece bastante essa
+          faixa inferior, a caixa extra só duplicava o escurecimento e virava
+          um retângulo/balão flutuante sem relação com o resto do layout.
+          Texto direto sobre o scrim, grande e com sombra forte, é o mesmo
+          padrão usado no título principal (ver bloco acima) — mantém a
+          legenda legível sem criar um elemento visual novo. */}
       {input.narrationText && (
-        <div style={{ display: "flex", justifyContent: "center", margin: "0 80px 30px 80px" }}>
+        <div style={{ display: "flex", justifyContent: "center", margin: "0 100px 34px 100px" }}>
           <div
             style={{
               display: "flex",
-              padding: "20px 40px",
-              borderRadius: 14,
-              background: "rgba(6,14,26,0.72)",
-              boxShadow: "0 6px 20px rgba(0,0,0,0.35)",
+              color: "#f8fafc",
+              fontSize: 32,
+              fontWeight: 700,
+              lineHeight: 1.45,
+              textAlign: "center",
+              maxWidth: 1560,
+              textShadow: "0 3px 14px rgba(0,0,0,0.7), 0 1px 3px rgba(0,0,0,0.9)",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                color: "#f8fafc",
-                fontSize: 30,
-                fontWeight: 700,
-                lineHeight: 1.45,
-                textAlign: "center",
-                maxWidth: 1600,
-              }}
-            >
-              {input.narrationText}
-            </div>
+            {input.narrationText}
           </div>
         </div>
       )}

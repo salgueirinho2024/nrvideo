@@ -109,12 +109,33 @@ export async function generateIntroSlide(input: IntroSlideInput): Promise<string
       />
 
       {logoDataUri ? (
-        <img
-          src={logoDataUri}
-          width={420}
-          height={420}
-          style={{ display: "flex", objectFit: "contain", marginBottom: 24 }}
-        />
+        // Cartão branco atrás da logo: a logo enviada já vem com fundo
+        // branco embutido (sem alpha), então colocá-la direto sobre o
+        // gradiente azul da intro criava uma caixa branca "crua" com corner
+        // reto por cima do fundo escuro. Este cartão arredondado com sombra
+        // resolve isso — como as duas áreas são brancas, a borda da logo
+        // some dentro do cartão e sobra só um card elegante com cantos
+        // arredondados flutuando sobre o fundo da marca.
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 460,
+            height: 460,
+            borderRadius: 48,
+            background: "#ffffff",
+            boxShadow: "0 24px 60px rgba(0,0,0,0.35)",
+            marginBottom: 24,
+          }}
+        >
+          <img
+            src={logoDataUri}
+            width={380}
+            height={380}
+            style={{ display: "flex", objectFit: "contain" }}
+          />
+        </div>
       ) : (
         // Wordmark tipográfico de fallback: "PREVINA" em branco + "-SE" em
         // laranja (cor de destaque usada em todo o resto do vídeo), sem

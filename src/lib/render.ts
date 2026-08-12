@@ -87,11 +87,52 @@ function buildCharacterGateExpr(segments: AlternatingSegment[]): string {
 // fallback heurístico — ver src/lib/lipsync/phoneme-service.ts), calculada
 // no step "generate-lipsync-scene-N" do Inngest. O render.ts não faz mais
 // NENHUMA análise de áudio — só desenha a timeline que já chegou pronta.
-// Limite de segurança: timelines absurdamente longas (ex.: fallback
-// heurístico em narrações muito longas, antes de mesclar) inflam demais a
-// expressão do filtro FFmpeg. Acima disso, simplificamos para boca sempre
-// "closed" nessa cena — degrada bem, não quebra o render.
-const MAX_MOUTH_CUES_IN_FILTER = 500;
+//
+// Limite de segurança: timelines muito longas (cenas de narração extensa,
+// tipicamente as cenas com vídeo de banco — são as que o roteiro tende a
+// deixar mais longas) inflam a expressão do filtro FFmpeg proporcional ao
+// número de cues. ANTES, passar desse limite fazia a cena inteira cair pra
+// boca sempre "closed" — na prática, a personagem "parava de falar" bem no
+// meio da fala assim que a timeline ficava longa o suficiente, e isso
+// batia direto nas cenas de vídeo. Agora, em vez de descartar a timeline,
+// `simplifyCuesToLimit` funde cues vizinhos aos pares repetidamente até
+// caber no limite — a boca continua se mexendo o tempo todo, só que com
+// granularidade um pouco menor nas cenas mais longas (na prática,
+// imperceptível: cues fundidos já eram trocas muito rápidas de fonema).
+const MAX_MOUTH_CUES_IN_FILTER = 1400;
+
+/**
+ * Funde cues adjacentes aos pares, repetidamente, até a lista caber no
+ * limite — nunca zera a timeline (diferente do comportamento antigo).
+ * Cada fusão mantém o estado do primeiro cue do par e estende o fim até
+ * o fim do segundo, então a boca nunca "trava" num estado fixo: ela
+ * continua trocando de forma ao longo da cena inteira, só que com menos
+ * trocas por segundo nas cenas muito longas.
+ */
+function simplifyCuesToLimit(cues: MouthCue[], limit: number): MouthCue[] {
+  let result = cues;
+  while (result.length > limit) {
+    const next: MouthCue[] = [];
+    for (let i = 0; i < result.length; i += 2) {
+      const a = result[i];
+      const b = result[i + 1];
+      next.push(b ? { start: a.start, end: b.end, state: a.state } : a);
+    }
+    result = next;
+  }
+  return result;
+}
+
+/** Timeline de cues realmente usada no filtro FFmpeg — original se já
+ *  couber no limite, ou simplificada (ver simplifyCuesToLimit) caso
+ *  contrário. Centralizado aqui pra getUsedMouthStates e
+ *  buildMouthEnableExpressions sempre trabalharem com a MESMA lista —
+ *  antes cada uma decidia isso separadamente e podiam divergir. */
+function getSafeCues(cues: MouthCue[]): MouthCue[] {
+  return cues.length <= MAX_MOUTH_CUES_IN_FILTER
+    ? cues
+    : simplifyCuesToLimit(cues, MAX_MOUTH_CUES_IN_FILTER);
+}
 
 const headMotion = new HeadMotionController();
 
@@ -118,7 +159,7 @@ function buildMouthEnableExpressions(
   states: MouthState[],
   characterGateExpr: string
 ): Record<MouthState, string> {
-  const safeCues = cues.length <= MAX_MOUTH_CUES_IN_FILTER ? cues : [];
+  const safeCues = getSafeCues(cues);
 
   const sumFor = (state: MouthState): string => {
     const matching = safeCues.filter((c) => c.state === state);
@@ -145,8 +186,10 @@ function buildMouthEnableExpressions(
       key === "closed"
         ? // "closed" também é o padrão de repouso: fica ativo se
           // explicitamente marcado OU se nenhum dos estados presentes cobre
-          // o instante t (ex.: cue ausente por causa do limite de segurança
-          // acima, ou estado sem nenhuma cue nessa cena).
+          // o instante t (ex.: nenhuma cue cobre esse instante — não
+          // acontece mais por causa do limite de segurança, já que
+          // simplifyCuesToLimit preserva a timeline inteira em vez de
+          // zerá-la).
           `gt(${sums.closed},0)+eq(${totalSum},0)`
         : `gt(${sums[key]},0)`;
     exprs[key] = `(${stateExpr})*${gate}`;
@@ -165,9 +208,7 @@ function buildMouthEnableExpressions(
  */
 function getUsedMouthStates(cues: MouthCue[]): MouthState[] {
   const used = new Set<MouthState>(["closed"]);
-  if (cues.length <= MAX_MOUTH_CUES_IN_FILTER) {
-    for (const c of cues) used.add(c.state);
-  }
+  for (const c of getSafeCues(cues)) used.add(c.state);
   return MOUTH_ASSET_KEYS.filter((key) => used.has(key));
 }
 

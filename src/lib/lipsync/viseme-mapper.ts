@@ -43,9 +43,15 @@ export function mapVisemesToMouthStates(timeline: VisemeTimeline): MouthCue[] {
     }
   }
 
-  // Descarta cues extremamente curtos (< 50ms) fundindo-os no vizinho
-  // anterior — evita jitter perceptível em trechos de fala muito rápida.
-  const MIN_DURATION = 0.05;
+  // Descarta cues extremamente curtos fundindo-os no vizinho anterior —
+  // evita jitter perceptível em trechos de fala muito rápida. 90ms é o
+  // limiar de troca de boca que ainda é visualmente perceptível numa
+  // animação; abaixo disso a troca não dá tempo de "ser vista" mesmo sem
+  // fundir. Subido de 50ms pra 90ms também tem um efeito colateral bom:
+  // reduz bastante o número de cues nas cenas de narração mais longa
+  // (tipicamente as cenas com vídeo de banco), que é o que alimenta o
+  // limite de segurança do render.ts (MAX_MOUTH_CUES_IN_FILTER).
+  const MIN_DURATION = 0.09;
   const smoothed: MouthCue[] = [];
   for (const cue of merged) {
     const duration = cue.end - cue.start;
