@@ -16,12 +16,69 @@ if (ffprobePath) {
   ffmpeg.setFfprobePath(ffprobePath);
 }
 
-// --- Mascote (bolha "falando" no canto, ver src/lib/mascot.tsx) ---
-// Tamanho final da bolha sobreposta ao vídeo (px) e distância das bordas.
-// Canto superior direito, bem maior que a versão anterior (bolha pequena no
-// canto inferior) para ter presença de verdade na tela.
-const MASCOT_DISPLAY_SIZE = 340;
-const MASCOT_MARGIN = 36;
+// --- Mascote alternando: "grande e falando" <-> "imagem em tela cheia" ---
+// Substituiu o modo antigo de bolha pequena fixa no canto: agora a
+// personagem ocupa uma faixa de tempo grande e centralizada (estilo
+// "apresentador"), e nas faixas seguintes some da tela pra dar lugar à
+// ilustração/vídeo de fundo sozinha — depois volta, alternando até a cena
+// acabar. Reaproveita os mesmos 8 PNGs de boca (public/mascot/); só muda
+// tamanho/posição/janela de tempo em que aparecem.
+const BIG_CHARACTER_SIZE = 640;
+// Duração de cada bloco "personagem grande" e cada bloco "só imagem".
+// Cenas mais curtas que isso ficam com um único bloco de personagem (ver
+// buildAlternatingSegments) — nunca corta a fala no meio pra caber um
+// segmento vazio.
+const CHARACTER_SEGMENT_SECONDS = 4.5;
+const IMAGE_SEGMENT_SECONDS = 4.5;
+// Se sobrar menos que isso no fim da cena pro próximo bloco, funde no
+// bloco anterior em vez de criar um segmento minúsculo (corte muito curto
+// fica mais "piscada" do que alternância de verdade).
+const MIN_TAIL_SECONDS = 1.5;
+
+interface AlternatingSegment {
+  type: "character" | "image";
+  start: number;
+  end: number;
+}
+
+/**
+ * Divide a duração da cena em blocos alternados "personagem grande" /
+ * "só imagem", sempre começando com a personagem (é ela quem introduz o
+ * assunto da cena). Determinístico e só depende da duração do áudio — não
+ * precisa de nenhuma marcação nova vinda do roteiro (Gemini).
+ */
+function buildAlternatingSegments(durationSeconds: number): AlternatingSegment[] {
+  const segments: AlternatingSegment[] = [];
+  let t = 0;
+  let type: AlternatingSegment["type"] = "character";
+  while (t < durationSeconds) {
+    const segLen = type === "character" ? CHARACTER_SEGMENT_SECONDS : IMAGE_SEGMENT_SECONDS;
+    let end = Math.min(t + segLen, durationSeconds);
+    if (durationSeconds - end < MIN_TAIL_SECONDS) end = durationSeconds;
+    segments.push({ type, start: t, end });
+    t = end;
+    type = type === "character" ? "image" : "character";
+  }
+  return segments;
+}
+
+/**
+ * Expressão FFmpeg "está num bloco de personagem no instante t" — soma de
+ * `between(t, início, fim)` de cada segmento do tipo "character". Usada
+ * como "portão" (gate) que é multiplicado pela expressão de cada boca em
+ * buildMouthEnableExpressions: a boca só fica visível se (a) aquele
+ * fonema está ativo E (b) o instante t cai dentro de um bloco de
+ * personagem. Fora dos blocos de personagem, a expressão vira 0 pra todas
+ * as bocas e a personagem simplesmente não aparece — é isso que dá lugar
+ * à imagem sozinha.
+ */
+function buildCharacterGateExpr(segments: AlternatingSegment[]): string {
+  const characterSegments = segments.filter((s) => s.type === "character");
+  if (characterSegments.length === 0) return "0";
+  return characterSegments
+    .map((s) => `between(t,${s.start.toFixed(3)},${s.end.toFixed(3)})`)
+    .join("+");
+}
 
 // --- Lip sync por fonemas reais (ver src/lib/lipsync/) ---
 // Substituiu a abordagem anterior de `silencedetect` + ciclo artificial de
@@ -58,7 +115,8 @@ const headMotion = new HeadMotionController();
  */
 function buildMouthEnableExpressions(
   cues: MouthCue[],
-  states: MouthState[]
+  states: MouthState[],
+  characterGateExpr: string
 ): Record<MouthState, string> {
   const safeCues = cues.length <= MAX_MOUTH_CUES_IN_FILTER ? cues : [];
 
@@ -75,9 +133,15 @@ function buildMouthEnableExpressions(
   ) as Record<MouthState, string>;
   const totalSum = states.map((key) => sums[key]).join("+");
 
+  // Portão "estamos num bloco de personagem grande agora?" — ver
+  // buildCharacterGateExpr. Multiplicado em toda expressão de boca abaixo:
+  // fora dos blocos de personagem, gate = 0 e nenhuma boca fica visível
+  // (é isso que faz a imagem aparecer sozinha nos blocos alternados).
+  const gate = `gt(${characterGateExpr},0)`;
+
   const exprs = {} as Record<MouthState, string>;
   for (const key of states) {
-    exprs[key] =
+    const stateExpr =
       key === "closed"
         ? // "closed" também é o padrão de repouso: fica ativo se
           // explicitamente marcado OU se nenhum dos estados presentes cobre
@@ -85,6 +149,7 @@ function buildMouthEnableExpressions(
           // acima, ou estado sem nenhuma cue nessa cena).
           `gt(${sums.closed},0)+eq(${totalSum},0)`
         : `gt(${sums[key]},0)`;
+    exprs[key] = `(${stateExpr})*${gate}`;
   }
   return exprs;
 }
@@ -202,16 +267,27 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   const mouthFrames = await getMascotFrames();
 
   const duration = await getAudioDuration(scene.audioPath);
+  // Blocos alternados "personagem grande" <-> "só imagem" ao longo da
+  // duração real do áudio (ver buildAlternatingSegments). É esse portão
+  // que faz a personagem sumir/voltar — o resto da cena (Ken Burns na
+  // imagem, texto) roda o tempo inteiro por baixo, sem cortes.
+  const segments = buildAlternatingSegments(duration);
+  const characterGateExpr = buildCharacterGateExpr(segments);
+  assertBalancedExpr("character-gate", characterGateExpr);
+
   // Só os estados de boca que a cena realmente usa (tipicamente 2-4 dos 8) —
   // ver getUsedMouthStates. Evita montar inputs/filtros pros estados que
   // essa cena nunca precisa, principal causa do consumo alto de memória do
   // ffmpeg nessa etapa.
   const usedStates = getUsedMouthStates(scene.mouthCues);
-  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues, usedStates);
+  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues, usedStates, characterGateExpr);
   const rotateExpr = headMotion.buildFfmpegRotateExpr();
 
-  const mascotX = `W-w-${MASCOT_MARGIN}`;
-  const mascotY = `${MASCOT_MARGIN}`; // canto SUPERIOR direito
+  // Personagem centralizada e grande enquanto "fala" (ver
+  // BIG_CHARACTER_SIZE) — não é mais uma bolha fixa no canto. Some da tela
+  // por completo nos blocos "image" (gate = 0 em mouthEnableExpr).
+  const mascotX = `(W-w)/2`;
+  const mascotY = `(H-h)/2`;
 
   // Índices dos inputs do ffmpeg: 0 = imagem da cena, 1 = áudio,
   // 2..N = os estados de boca usados nessa cena, na ordem de MOUTH_ASSET_KEYS.
@@ -290,7 +366,7 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
     // tamanho final da bolha (ver usedStates acima).
     ...usedStates.map((key) => ({
       filter: "scale",
-      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
+      options: { w: BIG_CHARACTER_SIZE, h: BIG_CHARACTER_SIZE },
       inputs: `${mouthInputIdx[key]}:v`,
       outputs: key,
     })),
@@ -409,6 +485,12 @@ export async function renderSceneClipVideo(
   const audioDurationSeconds = await getAudioDuration(scene.audioPath);
   const mouthFrames = await getMascotFrames();
 
+  // Mesmos blocos alternados "personagem grande" <-> "só vídeo de banco"
+  // usados em renderSceneClip — ver buildAlternatingSegments.
+  const segments = buildAlternatingSegments(audioDurationSeconds);
+  const characterGateExpr = buildCharacterGateExpr(segments);
+  assertBalancedExpr("character-gate", characterGateExpr);
+
   // Estados de boca que a cena realmente usa (ver getUsedMouthStates em
   // renderSceneClip) — mesma timeline real de fonemas, não mais um ciclo
   // artificial baseado só em detectar silêncio. Era essa a causa do
@@ -416,7 +498,7 @@ export async function renderSceneClipVideo(
   // fixo de 4 passos (fechada/meio/aberta/meio) só quando havia áudio,
   // sem relação nenhuma com o fonema sendo falado naquele instante.
   const usedStates = getUsedMouthStates(scene.mouthCues);
-  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues, usedStates);
+  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues, usedStates, characterGateExpr);
   const rotateExpr = headMotion.buildFfmpegRotateExpr();
 
   for (const key of usedStates) {
@@ -424,8 +506,8 @@ export async function renderSceneClipVideo(
   }
   assertBalancedExpr("rotate:a", rotateExpr);
 
-  const mascotX = `W-w-${MASCOT_MARGIN}`;
-  const mascotY = `${MASCOT_MARGIN}`;
+  const mascotX = `(W-w)/2`;
+  const mascotY = `(H-h)/2`;
 
   // Índices dos inputs: 0 = vídeo de fundo (em loop), 1 = áudio da
   // narração, 2 = overlay de texto transparente, 3..N = estados de boca
@@ -464,7 +546,7 @@ export async function renderSceneClipVideo(
     // Frames de boca do mascote realmente usados nessa cena.
     ...usedStates.map((key) => ({
       filter: "scale",
-      options: { w: MASCOT_DISPLAY_SIZE, h: MASCOT_DISPLAY_SIZE },
+      options: { w: BIG_CHARACTER_SIZE, h: BIG_CHARACTER_SIZE },
       inputs: `${mouthInputIdx[key]}:v`,
       outputs: key,
     })),
