@@ -101,6 +101,20 @@ function buildCharacterGateExpr(segments: AlternatingSegment[]): string {
 // imperceptível: cues fundidos já eram trocas muito rápidas de fonema).
 const MAX_MOUTH_CUES_IN_FILTER = 1400;
 
+// Segundo limite de segurança, ortogonal ao de cima: MAX_MOUTH_CUES_IN_FILTER
+// controla a QUANTIDADE de cues (trocas ao longo do tempo); este aqui
+// controla a VARIEDADE de estados distintos usados na cena. Cada estado
+// extra em usedStates vira uma cadeia inteira de filtro (scale+rotate+
+// overlay) rodando a BIG_CHARACTER_SIZE (640px) em tela cheia no ffmpeg —
+// é isso que causou o OOM de 2243MB/2048MB: a correção anterior do
+// lipsync fez cenas de narração longa (as de vídeo de banco, já as mais
+// sensíveis a memória) pararem de cair pra "só um estado" e passarem a
+// usar os 8 possíveis. Cenas de vídeo levam um teto mais rígido porque já
+// pagam o custo extra de decodificar o vídeo de fundo quadro a quadro por
+// baixo dos overlays de boca.
+const MAX_MOUTH_STATES_IMAGE_SCENE = 5;
+const MAX_MOUTH_STATES_VIDEO_SCENE = 3;
+
 /**
  * Funde cues adjacentes aos pares, repetidamente, até a lista caber no
  * limite — nunca zera a timeline (diferente do comportamento antigo).
@@ -123,15 +137,60 @@ function simplifyCuesToLimit(cues: MouthCue[], limit: number): MouthCue[] {
   return result;
 }
 
-/** Timeline de cues realmente usada no filtro FFmpeg — original se já
- *  couber no limite, ou simplificada (ver simplifyCuesToLimit) caso
- *  contrário. Centralizado aqui pra getUsedMouthStates e
+/**
+ * Quando uma cena usa mais estados de boca distintos do que `maxStates`,
+ * remapeia (nunca descarta) os cues dos estados menos usados — por
+ * duração total somada, não por contagem de cues — pro estado MANTIDO
+ * mais próximo na ordem de MOUTH_ASSET_KEYS. "closed" nunca é removido
+ * (é o estado de repouso/fallback). O resultado é que a boca continua se
+ * mexendo o tempo inteiro, só que com menos formas distintas nas cenas
+ * pesadas — em vez de simplesmente não montar a cadeia de filtro desses
+ * estados e a boca "sumir" (ficar sempre fechada) durante os trechos que
+ * usavam esses fonemas, que era o efeito colateral de só cortar states
+ * sem remapear.
+ */
+function limitMouthStates(cues: MouthCue[], maxStates: number): MouthCue[] {
+  const present = new Set(cues.map((c) => c.state));
+  if (present.size <= maxStates) return cues;
+
+  const durationByState = new Map<MouthState, number>();
+  for (const c of cues) {
+    durationByState.set(c.state, (durationByState.get(c.state) ?? 0) + (c.end - c.start));
+  }
+
+  // Ranking dos estados não-"closed" por tempo total de tela, do mais
+  // usado pro menos usado — são os primeiros (maxStates - 1) que ficam.
+  const ranked = MOUTH_ASSET_KEYS.filter((s) => s !== "closed" && present.has(s)).sort(
+    (a, b) => (durationByState.get(b) ?? 0) - (durationByState.get(a) ?? 0)
+  );
+  const kept = new Set<MouthState>(["closed", ...ranked.slice(0, Math.max(0, maxStates - 1))]);
+
+  const indexOf = (s: MouthState) => MOUTH_ASSET_KEYS.indexOf(s);
+  const nearestKept = (state: MouthState): MouthState => {
+    let best: MouthState = "closed";
+    let bestDist = Infinity;
+    for (const k of kept) {
+      const dist = Math.abs(indexOf(k) - indexOf(state));
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = k;
+      }
+    }
+    return best;
+  };
+
+  return cues.map((c) => (kept.has(c.state) ? c : { ...c, state: nearestKept(c.state) }));
+}
+
+/** Timeline de cues realmente usada no filtro FFmpeg — depois de aplicar
+ *  os dois limites de segurança acima (quantidade de cues e variedade de
+ *  estados). Centralizado aqui pra getUsedMouthStates e
  *  buildMouthEnableExpressions sempre trabalharem com a MESMA lista —
  *  antes cada uma decidia isso separadamente e podiam divergir. */
-function getSafeCues(cues: MouthCue[]): MouthCue[] {
-  return cues.length <= MAX_MOUTH_CUES_IN_FILTER
-    ? cues
-    : simplifyCuesToLimit(cues, MAX_MOUTH_CUES_IN_FILTER);
+function getSafeCues(cues: MouthCue[], maxStates: number): MouthCue[] {
+  const trimmed =
+    cues.length <= MAX_MOUTH_CUES_IN_FILTER ? cues : simplifyCuesToLimit(cues, MAX_MOUTH_CUES_IN_FILTER);
+  return limitMouthStates(trimmed, maxStates);
 }
 
 const headMotion = new HeadMotionController();
@@ -157,9 +216,10 @@ const headMotion = new HeadMotionController();
 function buildMouthEnableExpressions(
   cues: MouthCue[],
   states: MouthState[],
-  characterGateExpr: string
+  characterGateExpr: string,
+  maxStates: number
 ): Record<MouthState, string> {
-  const safeCues = getSafeCues(cues);
+  const safeCues = getSafeCues(cues, maxStates);
 
   const sumFor = (state: MouthState): string => {
     const matching = safeCues.filter((c) => c.state === state);
@@ -206,9 +266,9 @@ function buildMouthEnableExpressions(
  * dos estados não usados, reduzindo bastante o consumo de memória do
  * ffmpeg por cena.
  */
-function getUsedMouthStates(cues: MouthCue[]): MouthState[] {
+function getUsedMouthStates(cues: MouthCue[], maxStates: number): MouthState[] {
   const used = new Set<MouthState>(["closed"]);
-  for (const c of getSafeCues(cues)) used.add(c.state);
+  for (const c of getSafeCues(cues, maxStates)) used.add(c.state);
   return MOUTH_ASSET_KEYS.filter((key) => used.has(key));
 }
 
@@ -320,8 +380,13 @@ export async function renderSceneClip(scene: RenderScene, index: number): Promis
   // ver getUsedMouthStates. Evita montar inputs/filtros pros estados que
   // essa cena nunca precisa, principal causa do consumo alto de memória do
   // ffmpeg nessa etapa.
-  const usedStates = getUsedMouthStates(scene.mouthCues);
-  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues, usedStates, characterGateExpr);
+  const usedStates = getUsedMouthStates(scene.mouthCues, MAX_MOUTH_STATES_IMAGE_SCENE);
+  const mouthEnableExpr = buildMouthEnableExpressions(
+    scene.mouthCues,
+    usedStates,
+    characterGateExpr,
+    MAX_MOUTH_STATES_IMAGE_SCENE
+  );
   const rotateExpr = headMotion.buildFfmpegRotateExpr();
 
   // Personagem centralizada e grande enquanto "fala" (ver
@@ -538,8 +603,13 @@ export async function renderSceneClipVideo(
   // lipsync "errado" nas cenas com vídeo de banco: a boca girava num ciclo
   // fixo de 4 passos (fechada/meio/aberta/meio) só quando havia áudio,
   // sem relação nenhuma com o fonema sendo falado naquele instante.
-  const usedStates = getUsedMouthStates(scene.mouthCues);
-  const mouthEnableExpr = buildMouthEnableExpressions(scene.mouthCues, usedStates, characterGateExpr);
+  const usedStates = getUsedMouthStates(scene.mouthCues, MAX_MOUTH_STATES_VIDEO_SCENE);
+  const mouthEnableExpr = buildMouthEnableExpressions(
+    scene.mouthCues,
+    usedStates,
+    characterGateExpr,
+    MAX_MOUTH_STATES_VIDEO_SCENE
+  );
   const rotateExpr = headMotion.buildFfmpegRotateExpr();
 
   for (const key of usedStates) {
